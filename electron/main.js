@@ -314,6 +314,9 @@ function registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData }) {
 
   handle("node:stop", () => nodeMgr.stop(chain.network().id));
   handle("node:logs", ({ service, tail }) => nodeMgr.logs(chain.network().id, service, tail));
+  handle("node:quickSyncInfo", () => nodeMgr.quickSyncInfo(chain.network().id));
+  handle("node:quickSync", () => nodeMgr.quickSync(chain.network().id));
+  handle("node:quickSyncCancel", () => nodeMgr.cancelQuickSync());
 
   // ----- rewards -----
   handle("rewards:status", () => rewards.status());

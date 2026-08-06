@@ -69,6 +69,27 @@ npm start
 
 Once your node is synced, has VHP, and the key is registered, it produces blocks and block rewards (KOIN) arrive at your wallet address.
 
+### ⚡ Quick sync (skip the multi-day initial sync)
+
+Instead of syncing mainnet from genesis, the Node tab's **Quick sync** button
+restores the [official Koinos Foundation chain backup](https://docs.koinos.io/nodes/backup-restore/)
+(~60 GB download) automatically:
+
+1. Stops the node if it's running.
+2. Downloads the snapshot from `seed.koinosfoundation.org` with resume support
+   (cancel any time — it picks up where it left off).
+3. Verifies the published SHA-256 checksum and inspects the archive layout
+   (unsafe paths are rejected; an unexpected layout aborts the restore).
+4. Extracts only `chain/` and `block_store/`, sets your previous chain data
+   aside in `node/mainnet/restore/previous-<timestamp>/` for rollback, and
+   installs the restored state. Wallet, `.env`, `config/`, and the p2p peer
+   identity are never touched.
+
+Plan for roughly **160 GB of free disk during the restore** (archive +
+extracted copy + your previous data); delete the `previous-*` rollback folder
+once the node runs fine. After it completes, press **Start node** — it syncs
+the remaining days-worth of blocks in minutes-to-hours. Mainnet only.
+
 ## How reward returns work
 
 - The engine tracks your wallet's liquid KOIN balance. On a dedicated producer wallet, balance increases are block rewards.

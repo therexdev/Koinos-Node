@@ -509,6 +509,7 @@ function renderNodeView() {
       <h1>Koinos node</h1>
       <div class="row">
         <button id="n-open" class="btn ghost">📁 Data folder</button>
+        <button id="n-quicksync" class="btn" style="display:none">⚡ Quick sync</button>
         <button id="n-stop" class="btn">Stop</button>
         <button id="n-start" class="btn primary">Start node</button>
       </div>
@@ -551,7 +552,67 @@ function renderNodeView() {
   $("#n-stop").addEventListener("click", onStopNode);
   $("#n-register").addEventListener("click", onRegisterKey);
   $("#n-log-refresh").addEventListener("click", loadLogs);
+  const qsBtn = $("#n-quicksync");
+  if (S.appInfo.settings.network === "mainnet") {
+    qsBtn.style.display = "";
+    qsBtn.addEventListener("click", onQuickSync);
+  }
   patchNodeView();
+}
+
+function fmtBytes(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "?";
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)} TB`;
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)} GB`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)} MB`;
+  return `${Math.round(v / 1e3)} kB`;
+}
+
+async function onQuickSync() {
+  const btn = $("#n-quicksync");
+  busyButton(btn, true, "Checking…");
+  let info;
+  try {
+    info = await call("node:quickSyncInfo");
+  } catch (e) {
+    busyButton(btn, false);
+    return toast(`Quick sync unavailable: ${e.message}`, "bad");
+  }
+  busyButton(btn, false);
+  const lowSpace = info.freeBytes != null && info.freeBytes < info.requiredBytes;
+  showModal({
+    title: "⚡ Quick sync from official backup",
+    body: `
+      <p class="small">Downloads the Koinos Foundation chain snapshot and installs it, so the node
+      catches up in hours instead of syncing for days. Your wallet, node config, and peer identity are not touched;
+      current chain data is set aside for rollback.</p>
+      <table style="margin:12px 0">
+        <tr><td class="muted small">Snapshot size</td><td class="mono small">${fmtBytes(info.archiveBytes)} (compressed)</td></tr>
+        <tr><td class="muted small">Snapshot date</td><td class="mono small">${esc(info.lastModified ?? "unknown")}</td></tr>
+        <tr><td class="muted small">Free disk space</td><td class="mono small">${info.freeBytes != null ? fmtBytes(info.freeBytes) : "unknown"} (needs ~${fmtBytes(info.requiredBytes)} during restore)</td></tr>
+        ${info.resumeFrom > 0 ? `<tr><td class="muted small">Resumable</td><td class="mono small">${fmtBytes(info.resumeFrom)} already downloaded</td></tr>` : ""}
+      </table>
+      ${lowSpace ? `<div class="banner warn">Free space looks below the recommended headroom — the restore may fail mid-way. Free up disk first if possible.</div>` : ""}
+      ${info.nodeRunning ? `<div class="banner info">The node is running — it will be stopped before the restore and can be started again right after.</div>` : ""}
+      <p class="small muted">The download is verified against the published SHA-256 and the archive layout is checked before anything is installed. You can cancel at any time and resume later.</p>`,
+    actions: [
+      { label: "Cancel", onClick: (close) => close() },
+      {
+        label: "Start quick sync", class: "primary",
+        onClick: async (close) => {
+          try {
+            await call("node:quickSync");
+            close();
+            toast("Quick sync started — progress shows on this page", "good");
+            refreshNode();
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        },
+      },
+    ],
+  });
 }
 
 function onStartNode() {
@@ -648,7 +709,25 @@ function patchNodeView() {
   // operation progress
   const opEl = $("#n-op");
   const op = n?.op;
-  if (op?.running) {
+  if (op?.running && op.name === "quick-sync") {
+    const p = op.progress ?? {};
+    const stageLabels = {
+      starting: "Starting…", stopping: "Stopping node", download: "Downloading snapshot",
+      verify: "Verifying checksum", inspect: "Inspecting archive", extract: "Extracting chain data",
+      install: "Installing", cleanup: "Cleaning up", done: "Done",
+    };
+    const pctText = p.pct != null ? ` — ${p.pct.toFixed(1)}%` : "";
+    const bytesText = p.doneBytes != null ? ` (${fmtBytes(p.doneBytes)} / ${fmtBytes(p.totalBytes)})` : "";
+    opEl.innerHTML = `<div class="banner info">
+      <div class="row spread"><span><span class="spin"></span> <b>Quick sync:</b> ${esc(stageLabels[p.stage] ?? p.stage ?? "working")}${pctText}${bytesText}</span>
+      <button id="n-qs-cancel" class="btn ghost" style="padding:4px 10px">Cancel</button></div>
+      ${p.pct != null ? `<div class="progress" style="margin-top:8px"><div style="width:${Math.min(100, p.pct).toFixed(1)}%"></div></div>` : ""}
+      <span class="mono small">${op.tail.slice(-2).map(esc).join("<br>")}</span></div>`;
+    $("#n-qs-cancel")?.addEventListener("click", async () => {
+      await call("node:quickSyncCancel").catch(() => {});
+      toast("Cancelling quick sync — the download can be resumed later", "warn");
+    });
+  } else if (op?.running) {
     opEl.innerHTML = `<div class="banner info"><span class="spin"></span> <b>${esc(op.name)}</b> in progress…<br>
       <span class="mono small">${op.tail.slice(-4).map(esc).join("<br>")}</span></div>`;
   } else if (op && op.code !== 0 && op.error) {

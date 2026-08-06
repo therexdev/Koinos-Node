@@ -53,6 +53,13 @@ const NETWORKS = {
     },
     composeProject: "koinos-desktop-mainnet",
     templateDir: "mainnet",
+    // Official chain snapshot published by the Koinos Foundation seed host
+    // (docs.koinos.io "Backup and restore"). Mainnet only.
+    backup: {
+      url: "https://seed.koinosfoundation.org/backups/koinos-backup.tar.gz",
+      sha256Url: "https://seed.koinosfoundation.org/backups/koinos-backup.tar.gz.sha256",
+      metadataUrl: "https://seed.koinosfoundation.org/backups/koinos-backup.tar.gz.metadata",
+    },
     p2pSeeds: [
       "/dns4/seed.koinosblocks.com/tcp/8888/p2p/QmUNURuZxSu5wLnmBNJdwGtwjLmV5JxGhu4uNSAS8ZNcze",
       "/dns4/seed.koinosfoundation.org/tcp/8888/p2p/QmQVBuhg2j2BV1hvMMNoLVrZ9T9gPb8F9bRgifCspBz6WW",

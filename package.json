@@ -1,7 +1,7 @@
 {
   "name": "koinos-node-desktop",
   "productName": "Koinos Node Desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Desktop app to create a Koinos wallet, burn KOIN to VHP, and run a block-producing Koinos node with automatic reward returns",
   "main": "electron/main.js",
   "private": true,
@@ -47,7 +47,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -58,11 +60,16 @@
       "deleteAppDataOnUninstall": false
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.finance"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Finance"
     },
     "publish": {

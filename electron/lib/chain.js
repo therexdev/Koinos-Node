@@ -1,6 +1,6 @@
 "use strict";
 
-const { Provider, Contract, utils } = require("koilib");
+const { Provider, Contract, Transaction, utils } = require("koilib");
 const { NETWORKS, POB_ABI, TOKEN_ABI } = require("./constants");
 const { cmpSats } = require("./format");
 
@@ -13,7 +13,14 @@ function rpcError(e) {
   // koilib sometimes surfaces raw JSON errors; extract the useful part.
   try {
     const parsed = JSON.parse(msg);
-    msg = parsed?.error?.message ?? parsed?.message ?? msg;
+    if (typeof parsed?.error === "string") {
+      msg = parsed.error;
+      if (Array.isArray(parsed.logs) && parsed.logs.length > 0) {
+        msg += ` — ${parsed.logs[0]}`;
+      }
+    } else {
+      msg = parsed?.error?.message ?? parsed?.message ?? msg;
+    }
   } catch {
     /* not JSON */
   }
@@ -55,6 +62,27 @@ class ChainService {
     );
     this._resolved[net.id] = { addrs, at: Date.now() };
     return addrs;
+  }
+
+  // KCS-4 tokens (the current mainnet KOIN) only let another contract pull
+  // funds through an allowance, so burning via PoB needs an approve operation
+  // in the same transaction. Legacy tokens (older deployments, testnets) have
+  // no allowance method at all — probe once per network and cache.
+  async _isAllowanceToken(provider) {
+    const net = this.network();
+    const cached = this._allowanceStyle?.[net.id];
+    if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) return cached.val;
+    let val;
+    try {
+      const koin = await this._contract("koin", { provider });
+      const probe = net.contracts.pob;
+      await koin.functions.allowance({ owner: probe, spender: probe });
+      val = true;
+    } catch {
+      val = false;
+    }
+    (this._allowanceStyle ??= {})[net.id] = { val, at: Date.now() };
+    return val;
   }
 
   network() {
@@ -178,8 +206,22 @@ class ChainService {
     return out;
   }
 
+  async _finalizeTx(tx) {
+    const out = { txId: tx.transaction?.id ?? null, confirmed: false, blockNumber: null };
+    try {
+      const { blockNumber } = await tx.wait("by_block", WAIT_TIMEOUT_MS);
+      out.confirmed = true;
+      out.blockNumber = blockNumber ?? null;
+    } catch {
+      out.note = "Transaction submitted; confirmation timed out. Check the explorer.";
+    }
+    return out;
+  }
+
   // Burn KOIN belonging to `signer` and credit VHP to the same address
-  // (or `vhpAddress` when given) via the PoB contract.
+  // (or `vhpAddress` when given) via the PoB contract. On KCS-4 KOIN the
+  // PoB contract pulls the tokens, so the same transaction first approves
+  // exactly the burn amount (the pull consumes the allowance).
   async burn(signer, amountSat, { vhpAddress } = {}) {
     const address = signer.getAddress();
     if (cmpSats(amountSat, "0") <= 0) throw new Error("Burn amount must be positive");
@@ -187,17 +229,26 @@ class ChainService {
     if (cmpSats(amountSat, koin) > 0) throw new Error("Insufficient KOIN balance");
     const provider = this.provider();
     const rcLimit = await this._rcLimit(provider, address);
-    const pob = await this._contract("pob", { signer, provider });
+    const addrs = await this.resolveContracts();
+    const needsApprove = await this._isAllowanceToken(provider);
     try {
-      const { transaction } = await pob.functions.burn(
-        {
-          token_amount: String(amountSat),
-          burn_address: address,
-          vhp_address: vhpAddress || address,
-        },
-        { rcLimit }
-      );
-      return await this._finalize(transaction);
+      const koinContract = await this._contract("koin", { signer, provider });
+      const pob = await this._contract("pob", { signer, provider });
+      const tx = new Transaction({ signer, provider, options: { rcLimit } });
+      if (needsApprove) {
+        await tx.pushOperation(koinContract.functions.approve, {
+          owner: address,
+          spender: addrs.pob,
+          value: String(amountSat),
+        });
+      }
+      await tx.pushOperation(pob.functions.burn, {
+        token_amount: String(amountSat),
+        burn_address: address,
+        vhp_address: vhpAddress || address,
+      });
+      await tx.send();
+      return await this._finalizeTx(tx);
     } catch (e) {
       throw rpcError(e);
     }

@@ -11,13 +11,41 @@ A desktop app that makes running a Koinos block producer simple:
 | --- | --- | --- |
 | ![Wallet](docs/screenshots/wallet.png) | ![Node](docs/screenshots/node.png) | ![Returns](docs/screenshots/returns.png) |
 
+## Install
+
+Download the installer for your platform from the
+**[latest release](https://github.com/mikemilas/Koinos-Node/releases/latest)**:
+
+- **Windows** — `Koinos-Node-Desktop-<version>-win-x64.exe` (one-click installer)
+- **macOS** — `Koinos-Node-Desktop-<version>-mac-<arch>.dmg`
+- **Linux** — `Koinos-Node-Desktop-<version>-linux-x86_64.AppImage` (make it executable and run)
+
+The builds are not code-signed, so Windows SmartScreen will warn about an
+unknown publisher on first run — click *More info → Run anyway*. On macOS,
+right-click the app → *Open* the first time.
+
+**Automatic updates:** installed builds check GitHub Releases on launch and
+every few hours. Updates download in the background and the app offers to
+restart; choosing *Later* applies the update on next quit. Your wallet,
+settings, and the running node are untouched by updates. (Exception: unsigned
+macOS builds can't self-update — macOS users download the new `.dmg`
+manually.)
+
 ## Requirements
 
-- **Node.js 20+** and npm
-- **Docker** — Docker Desktop (macOS/Windows) or Docker Engine with Compose v2 (Linux)
-- Disk space for the chain (tens of GB, grows over time) and a machine that stays online if you want to produce blocks
+- **Docker** — the Koinos node runs as Docker containers:
+  [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+  (Windows/macOS) or
+  [Docker Engine + Compose v2](https://docs.docker.com/engine/install/)
+  (Linux). The app's Node tab also links to the right download for your OS
+  whenever Docker isn't detected. The wallet and burn features work without
+  Docker.
+- Disk space for the chain (tens of GB, grows over time) and a machine that
+  stays online if you want to produce blocks.
+- **Node.js 20+** and npm — only when running from source instead of the
+  installer.
 
-## Quick start
+## Run from source
 
 ```bash
 git clone https://github.com/mikemilas/Koinos-Node.git
@@ -25,6 +53,10 @@ cd Koinos-Node
 npm install
 npm start
 ```
+
+> Windows PowerShell note: if `npm` fails with "running scripts is disabled",
+> run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+> once (or use `npm.cmd` / Command Prompt instead).
 
 ## Guide: from zero to producing blocks
 
@@ -81,6 +113,26 @@ Default ports: mainnet — p2p `8888`, JSON-RPC `127.0.0.1:8080`, AMQP `5672`; h
 - Sending, burning, key registration and automatic returns all require the wallet to be unlocked; revealing or deleting the keystore requires the password again.
 - No telemetry, no third-party services beyond the RPC endpoint you configure.
 - This app manages real funds. Back up your WIF. Test on Harbinger first if unsure.
+
+## Releasing new versions (maintainers)
+
+Installers are built and published automatically by GitHub Actions
+(`.github/workflows/release.yml`) whenever a version tag is pushed:
+
+```bash
+npm version minor          # or patch/major — bumps package.json + creates the tag
+git push --follow-tags
+```
+
+The workflow builds the Windows `.exe`, macOS `.dmg`/`.zip`, and Linux
+`.AppImage` on native runners, runs the test suite, and attaches everything
+(plus the `latest*.yml` auto-update metadata) to a GitHub Release for that
+tag. As soon as the release is live, installed apps pick it up via
+auto-update. No secrets need configuring — the workflow uses the built-in
+`GITHUB_TOKEN`.
+
+Local builds (for testing the packaging): `npm run dist:win`, or `npm run
+dist` for the current platform. Output lands in `dist/`.
 
 ## Development
 

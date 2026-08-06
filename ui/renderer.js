@@ -627,8 +627,20 @@ function patchNodeView() {
   // docker banner
   const dockerEl = $("#n-docker");
   if (n?.docker && !n.docker.ok) {
+    const isLinux = S.appInfo.platform === "linux";
     dockerEl.innerHTML = `<div class="banner bad"><b>Docker unavailable.</b> ${esc(n.docker.error)}<br>
-      Install Docker Desktop (macOS/Windows) or Docker Engine + Compose (Linux), start it, then come back.</div>`;
+      <span class="muted small">The Koinos node runs as Docker containers, so Docker must be installed and running first. It's free.</span>
+      <div class="row" style="margin-top:10px">
+        <button id="n-docker-get" class="btn">⬇️ ${isLinux ? "Install Docker Engine" : "Download Docker Desktop"}</button>
+        <span class="muted small">${isLinux ? "docs.docker.com/engine/install" : "docker.com — then install, start it, and come back"}</span>
+      </div></div>`;
+    $("#n-docker-get").addEventListener("click", () =>
+      call("util:openExternal", {
+        url: isLinux
+          ? "https://docs.docker.com/engine/install/"
+          : "https://www.docker.com/products/docker-desktop/",
+      }).catch(() => {})
+    );
   } else {
     dockerEl.innerHTML = "";
   }

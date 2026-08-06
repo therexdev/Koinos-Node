@@ -1,20 +1,75 @@
 {
   "name": "koinos-node-desktop",
   "productName": "Koinos Node Desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop app to create a Koinos wallet, burn KOIN to VHP, and run a block-producing Koinos node with automatic reward returns",
   "main": "electron/main.js",
   "private": true,
   "license": "MIT",
   "author": "mikemilas",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikemilas/Koinos-Node.git"
+  },
   "scripts": {
     "start": "electron .",
-    "test": "node --test"
+    "test": "node --test",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "release": "electron-builder --publish always"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "koilib": "^9.2.0"
   },
   "devDependencies": {
-    "electron": "^43.3.0"
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.mikemilas.koinos-node-desktop",
+    "productName": "Koinos Node Desktop",
+    "artifactName": "Koinos-Node-Desktop-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "ui/**/*",
+      "node-template/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node-template/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "Koinos Node Desktop",
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.finance"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Finance"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "mikemilas",
+      "repo": "Koinos-Node",
+      "releaseType": "release"
+    }
   }
 }

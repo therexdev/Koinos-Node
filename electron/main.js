@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, clipboard, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
@@ -95,6 +95,7 @@ if (!gotLock) {
 
     registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData });
     createWindow();
+    setupAutoUpdates();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -105,6 +106,43 @@ if (!gotLock) {
   app.on("window-all-closed", () => {
     app.quit();
   });
+}
+
+// Checks GitHub Releases for new versions (installed builds only), downloads
+// in the background, and offers to restart. "Later" still applies the update
+// on quit.
+function setupAutoUpdates() {
+  if (!app.isPackaged) return;
+  let updater;
+  try {
+    ({ autoUpdater: updater } = require("electron-updater"));
+  } catch {
+    return;
+  }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.on("update-available", (info) => {
+    sendEvent({ type: "update", message: `Update v${info.version} found — downloading in the background…` });
+  });
+  updater.on("update-downloaded", async (info) => {
+    sendEvent({ type: "update", message: `Update v${info.version} downloaded — restart to install.` });
+    const { response } = await dialog.showMessageBox(win, {
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Koinos Node Desktop v${info.version} is ready to install`,
+      detail:
+        "Restart the app to apply the update now. If you choose Later, it installs automatically the next time you quit. Your wallet, settings, and the running node are not affected.",
+    });
+    if (response === 0) updater.quitAndInstall();
+  });
+  updater.on("error", () => {
+    // Update checks are best-effort; never bother the user about them failing.
+  });
+  const check = () => updater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, 4 * 60 * 60 * 1000);
 }
 
 function registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData }) {

@@ -61,6 +61,38 @@ test("token transfer operation encodes and decodes", async () => {
   assert.deepEqual(dec.args, args);
 });
 
+test("KCS-4 approve is present with the expected entry point", () => {
+  assert.equal(TOKEN_ABI.methods.approve.entry_point, 1960973952);
+  assert.equal(TOKEN_ABI.methods.allowance.read_only, true);
+});
+
+test("burn bundles approve + pob.burn in one transaction (KCS-4 flow)", async () => {
+  const { Transaction, Signer } = require("koilib");
+  const signer = Signer.fromSeed("burn tx test");
+  const address = signer.getAddress();
+  const pobId = NETWORKS.mainnet.contracts.pob;
+  const koin = new Contract({ id: NETWORKS.mainnet.contracts.koin, abi: TOKEN_ABI, signer });
+  const pob = new Contract({ id: pobId, abi: POB_ABI, signer });
+
+  const tx = new Transaction({ signer });
+  await tx.pushOperation(koin.functions.approve, { owner: address, spender: pobId, value: "500000000" });
+  await tx.pushOperation(pob.functions.burn, {
+    token_amount: "500000000",
+    burn_address: address,
+    vhp_address: address,
+  });
+
+  const ops = tx.transaction.operations;
+  assert.equal(ops.length, 2);
+  assert.equal(ops[0].call_contract.contract_id, NETWORKS.mainnet.contracts.koin);
+  assert.equal(ops[0].call_contract.entry_point, 1960973952); // approve
+  assert.equal(ops[1].call_contract.contract_id, pobId);
+  assert.equal(ops[1].call_contract.entry_point, 0x859facc5); // pob.burn
+
+  const approveArgs = await koin.decodeOperation(ops[0]);
+  assert.deepEqual(approveArgs.args, { owner: address, spender: pobId, value: "500000000" });
+});
+
 test("burn operation decodes back to the original args", async () => {
   const c = pobContract();
   const op = await c.encodeOperation({

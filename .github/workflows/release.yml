@@ -1,0 +1,35 @@
+name: Release installers
+
+# Builds and publishes installers to a GitHub Release whenever a version tag
+# is pushed:  npm version minor && git push --follow-tags
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      # Builds the installer for the runner's OS and uploads it (plus the
+      # auto-update metadata files) to the release for this tag.
+      - run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

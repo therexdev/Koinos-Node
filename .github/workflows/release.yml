@@ -5,6 +5,10 @@ name: Release installers
 on:
   push:
     tags: ["v*"]
+  # Manual trigger (Actions tab → Release installers → Run workflow) — builds
+  # from the chosen ref and publishes to the release matching package.json's
+  # version. Handy when a runner flakes on a tag build.
+  workflow_dispatch:
 
 permissions:
   contents: write

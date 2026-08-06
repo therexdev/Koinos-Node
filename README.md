@@ -14,7 +14,7 @@ A desktop app that makes running a Koinos block producer simple:
 ## Install
 
 Download the installer for your platform from the
-**[latest release](https://github.com/mikemilas/Koinos-Node/releases/latest)**:
+**[latest release](https://github.com/therexdev/Koinos-Node/releases/latest)**:
 
 - **Windows** — `Koinos-Node-Desktop-<version>-win-x64.exe` (one-click installer)
 - **macOS** — `Koinos-Node-Desktop-<version>-mac-<arch>.dmg`
@@ -48,7 +48,7 @@ manually.)
 ## Run from source
 
 ```bash
-git clone https://github.com/mikemilas/Koinos-Node.git
+git clone https://github.com/therexdev/Koinos-Node.git
 cd Koinos-Node
 npm install
 npm start

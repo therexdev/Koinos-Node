@@ -6,10 +6,10 @@
   "main": "electron/main.js",
   "private": true,
   "license": "MIT",
-  "author": "mikemilas",
+  "author": "therexdev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mikemilas/Koinos-Node.git"
+    "url": "https://github.com/therexdev/Koinos-Node.git"
   },
   "scripts": {
     "start": "electron .",
@@ -27,7 +27,7 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.mikemilas.koinos-node-desktop",
+    "appId": "com.therexdev.koinos-node-desktop",
     "productName": "Koinos Node Desktop",
     "artifactName": "Koinos-Node-Desktop-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -67,7 +67,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "mikemilas",
+      "owner": "therexdev",
       "repo": "Koinos-Node",
       "releaseType": "release"
     }

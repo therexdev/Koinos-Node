@@ -9,7 +9,12 @@ const { NETWORKS, DEFAULT_SETTINGS } = require("./lib/constants");
 const { WalletService, MIN_PASSWORD_LENGTH } = require("./lib/wallet");
 const { ChainService } = require("./lib/chain");
 const { NodeManager } = require("./lib/node-manager");
+const { SetupService } = require("./lib/setup");
 const { RewardEngine } = require("./lib/rewards");
+
+// Optional override so the guided-setup UI can be exercised for other
+// platforms during development/screenshots. Never set in production.
+const FORCED_PLATFORM = process.env.KND_FORCE_PLATFORM || null;
 const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 
 let win = null;
@@ -90,10 +95,17 @@ if (!gotLock) {
       dataRoot: path.join(userData, "node"),
       onEvent: sendEvent,
     });
+    const setup = new SetupService({
+      platform: FORCED_PLATFORM || process.platform,
+      arch: process.arch,
+      downloadDir: path.join(userData, "downloads"),
+      state,
+      onEvent: sendEvent,
+    });
     const rewards = new RewardEngine({ chain, wallet, settings, state, onEvent: sendEvent });
     rewards.start();
 
-    registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData });
+    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, userData });
     createWindow();
     setupAutoUpdates();
 
@@ -145,7 +157,7 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData }) {
+function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, userData }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
@@ -174,7 +186,7 @@ function registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData }) {
   // ----- app / settings -----
   handle("app:info", () => ({
     version: require("../package.json").version,
-    platform: process.platform,
+    platform: FORCED_PLATFORM || process.platform,
     userData,
     networks: publicNetworks,
     settings: settings.all(),
@@ -299,7 +311,26 @@ function registerIpc({ settings, wallet, chain, nodeMgr, rewards, userData }) {
     if (status.isRunning) {
       sync = await chain.syncStatus().catch(() => null);
     }
-    return { network: networkId, ...status, sync };
+    // Only probe prerequisites while Docker isn't usable yet — this is what
+    // drives the guided setup card.
+    let setupStatus = null;
+    if (!status.docker?.ok) {
+      setupStatus = await setup.status().catch(() => null);
+    }
+    return { network: networkId, ...status, sync, setup: setupStatus };
+  });
+
+  // ----- guided setup (WSL + Docker) -----
+  handle("setup:status", () => setup.status());
+  handle("setup:installWsl", () => setup.installWsl());
+  handle("setup:restart", () => setup.restart());
+  handle("setup:cancelRestart", () => setup.cancelRestart());
+  handle("setup:installDocker", () => setup.installDocker());
+  handle("setup:cancelInstallDocker", () => setup.cancelInstallDocker());
+  handle("setup:startDocker", () => setup.startDocker());
+  handle("setup:openDockerDocs", () => {
+    shell.openExternal(setup.dockerDocsUrl());
+    return true;
   });
 
   handle("node:start", async ({ produce }) => {

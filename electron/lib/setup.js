@@ -1,0 +1,233 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const { execFile, spawn } = require("child_process");
+const { httpDownload } = require("./download");
+const { computeSetupPlan, dockerAsset, DOCKER_DOCS, WSL_INSTALL_ARGS } = require("./setup-plan");
+
+// Automates the Windows/macOS prerequisites (WSL 2 + Docker Desktop) so the
+// user never has to open a terminal or hunt for a download. Detection is
+// best-effort; every action degrades to a clear message if the platform
+// doesn't cooperate.
+class SetupService {
+  constructor({ platform, arch, downloadDir, state, onEvent }) {
+    this.platform = platform || process.platform;
+    this.arch = arch || process.arch;
+    this.downloadDir = downloadDir;
+    this.state = state;
+    this.onEvent = onEvent || (() => {});
+    this._op = null;
+    this._abort = null;
+  }
+
+  _exec(bin, args, opts = {}) {
+    return new Promise((resolve) => {
+      execFile(
+        bin,
+        args,
+        { timeout: opts.timeout ?? 15000, windowsHide: true, env: process.env },
+        (error, stdout, stderr) =>
+          resolve({
+            ok: !error,
+            code: error?.code,
+            stdout: String(stdout || ""),
+            stderr: String(stderr || ""),
+          })
+      );
+    });
+  }
+
+  // ---------- detection ----------
+
+  async detectWsl() {
+    if (this.platform !== "win32") return { installed: true, rebootPending: false };
+    // `wsl --version` only succeeds on the modern WSL 2 (Store) build; the old
+    // inbox stub prints usage text and exits non-zero.
+    const r = await this._exec("wsl.exe", ["--version"], { timeout: 12000 });
+    const installed = r.ok && /wsl/i.test(r.stdout);
+    const rebootPending = !installed && !!this.state?.get("setup.wslRebootPending", false);
+    if (installed && this.state?.get("setup.wslRebootPending", false)) {
+      this.state.set("setup.wslRebootPending", false);
+    }
+    return { installed, rebootPending };
+  }
+
+  _dockerAppInstalled() {
+    try {
+      if (this.platform === "win32") {
+        const candidates = [
+          path.join(process.env["ProgramFiles"] || "C:/Program Files", "Docker/Docker/Docker Desktop.exe"),
+          path.join(process.env["ProgramW6432"] || "C:/Program Files", "Docker/Docker/Docker Desktop.exe"),
+        ];
+        return candidates.find((p) => fs.existsSync(p)) || null;
+      }
+      if (this.platform === "darwin") {
+        return fs.existsSync("/Applications/Docker.app") ? "/Applications/Docker.app" : null;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  async detectDocker() {
+    const version = await this._exec("docker", ["--version"], { timeout: 12000 });
+    const cliInstalled = version.ok;
+    const appPath = this._dockerAppInstalled();
+    const installed = cliInstalled || !!appPath;
+    let running = false;
+    if (installed) {
+      const info = await this._exec("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 15000 });
+      running = info.ok && info.stdout.trim().length > 0;
+    }
+    return { installed, running, appPath };
+  }
+
+  async status() {
+    const [wsl, docker] = await Promise.all([this.detectWsl(), this.detectDocker()]);
+    const plan = computeSetupPlan({ platform: this.platform, wsl, docker });
+    return { platform: this.platform, wsl, docker, ...plan, op: this.currentOp() };
+  }
+
+  currentOp() {
+    if (!this._op) return null;
+    const { lines, ...rest } = this._op;
+    return { ...rest, tail: (lines || []).slice(-4) };
+  }
+
+  // ---------- actions ----------
+
+  async installWsl() {
+    if (this.platform !== "win32") throw new Error("WSL is only needed on Windows");
+    // Launch `wsl --install --no-distribution` elevated via a UAC prompt. The
+    // elevated install runs in its own window; we detect completion by
+    // re-checking `wsl --version`, and flag that a reboot is expected.
+    const psCommand =
+      `Start-Process -FilePath 'wsl.exe' -ArgumentList ` +
+      WSL_INSTALL_ARGS.map((a) => `'${a}'`).join(",") +
+      ` -Verb RunAs`;
+    const r = await this._exec(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand],
+      { timeout: 120000 }
+    );
+    if (!r.ok) {
+      // Non-zero here almost always means the UAC prompt was declined.
+      throw new Error("Windows permission was declined, so WSL wasn't installed. Click Enable WSL and choose Yes.");
+    }
+    this.state?.set("setup.wslRebootPending", true);
+    this.onEvent({
+      type: "setup",
+      message: "Installing WSL 2 — follow the Windows window, then restart your PC when it finishes.",
+    });
+    return { started: true, rebootExpected: true };
+  }
+
+  async restart() {
+    if (this.platform !== "win32") throw new Error("Restart is only offered on Windows");
+    // 60-second delay so the user can save work; cancellable with cancelRestart().
+    const r = await this._exec(
+      "shutdown.exe",
+      ["/r", "/t", "60", "/c", "Restarting to finish WSL setup for Koinos Node Desktop."],
+      { timeout: 10000 }
+    );
+    if (!r.ok) throw new Error("Couldn't schedule the restart. Restart Windows manually to finish WSL setup.");
+    this.onEvent({ type: "setup", message: "Windows will restart in 60 seconds. Save your work." });
+    return { scheduled: true, seconds: 60 };
+  }
+
+  async cancelRestart() {
+    if (this.platform !== "win32") return { cancelled: false };
+    await this._exec("shutdown.exe", ["/a"], { timeout: 10000 });
+    return { cancelled: true };
+  }
+
+  async installDocker() {
+    const asset = dockerAsset(this.platform, this.arch);
+    if (!asset) throw new Error("On Linux, install Docker Engine from the documentation link.");
+    if (this._op?.running) throw new Error("A download is already in progress");
+
+    fs.mkdirSync(this.downloadDir, { recursive: true });
+    const dest = path.join(this.downloadDir, asset.filename);
+    const op = {
+      name: "docker-download",
+      running: true,
+      startedAt: Date.now(),
+      progress: { stage: "download", pct: 0 },
+      lines: [`Downloading ${asset.filename}…`],
+      error: null,
+      code: null,
+    };
+    this._op = op;
+    this._abort = new AbortController();
+
+    this.onEvent({ type: "setup", message: "Downloading Docker Desktop…" });
+    httpDownload(asset.url, dest, {
+      signal: this._abort.signal,
+      onProgress: (done, total) => {
+        op.progress = { stage: "download", pct: total ? (done / total) * 100 : null, doneBytes: done, totalBytes: total };
+      },
+    })
+      .then(async () => {
+        op.progress = { stage: "launch", pct: 100 };
+        op.lines.push("Download complete — launching the installer.");
+        await this._launchInstaller(asset, dest);
+        op.running = false;
+        op.code = 0;
+        this.onEvent({
+          type: "setup",
+          message:
+            this.platform === "win32"
+              ? "Docker Desktop installer launched — follow its prompts, then start Docker."
+              : "Docker disk image opened — drag Docker to Applications, then start it.",
+        });
+      })
+      .catch((e) => {
+        op.running = false;
+        op.code = 1;
+        op.error = String(e?.message ?? e);
+        if (!/cancel/i.test(op.error)) {
+          this.onEvent({ type: "setup", level: "error", message: `Docker download failed: ${op.error}` });
+        }
+      });
+    return { started: true };
+  }
+
+  cancelInstallDocker() {
+    if (this._op?.name === "docker-download" && this._op.running) {
+      this._abort?.abort();
+      return { cancelling: true };
+    }
+    return { cancelling: false };
+  }
+
+  async _launchInstaller(asset, dest) {
+    if (this.platform === "win32") {
+      // The installer self-elevates and shows its own UI.
+      spawn(dest, [], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+    } else if (this.platform === "darwin") {
+      spawn("open", [dest], { detached: true, stdio: "ignore" }).unref();
+    }
+  }
+
+  async startDocker() {
+    if (this.platform === "win32") {
+      const exe = this._dockerAppInstalled();
+      if (!exe) throw new Error("Docker Desktop isn't installed yet. Install it first.");
+      spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+    } else if (this.platform === "darwin") {
+      spawn("open", ["-a", "Docker"], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      throw new Error("Start the Docker service with your init system, e.g. `sudo systemctl start docker`.");
+    }
+    this.onEvent({ type: "setup", message: "Starting Docker — this can take a minute on first launch." });
+    return { started: true };
+  }
+
+  dockerDocsUrl() {
+    return DOCKER_DOCS[this.platform] || DOCKER_DOCS.linux;
+  }
+}
+
+module.exports = { SetupService };

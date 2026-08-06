@@ -33,17 +33,35 @@ manually.)
 
 ## Requirements
 
-- **Docker** — the Koinos node runs as Docker containers:
-  [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-  (Windows/macOS) or
-  [Docker Engine + Compose v2](https://docs.docker.com/engine/install/)
-  (Linux). The app's Node tab also links to the right download for your OS
-  whenever Docker isn't detected. The wallet and burn features work without
-  Docker.
+- **Docker** — the Koinos node runs as Docker containers. You don't have to
+  set this up by hand: on Windows and macOS the Node tab's **guided setup**
+  installs the prerequisites for you (see below). The wallet and burn features
+  work without Docker.
 - Disk space for the chain (tens of GB, grows over time) and a machine that
   stays online if you want to produce blocks.
 - **Node.js 20+** and npm — only when running from source instead of the
   installer.
+
+### Guided setup (no terminal, no manual Docker hunt)
+
+When Docker isn't ready, the Node tab shows a **Set up requirements** card that
+walks you through it with one-click buttons and live detection — no PowerShell,
+no searching download pages:
+
+- **Windows** — *Enable WSL* runs the WSL 2 install for you (Windows shows its
+  standard permission prompt; you click Yes), then offers a *Restart Windows*
+  button. After the reboot, *Install Docker Desktop* downloads the official
+  installer and launches it, and *Start Docker* launches Docker Desktop. The
+  card advances itself as each piece comes online.
+- **macOS** — *Install Docker Desktop* downloads and opens Docker's disk image;
+  *Start Docker* launches it.
+- **Linux** — Docker Engine is installed per-distribution, so the card links to
+  the official guide (Linux users typically prefer to run the install
+  themselves).
+
+Under the hood there's no native Koinos node for Windows yet — every option
+runs the official node via Docker + WSL 2 — so WSL is genuinely required there;
+the app just makes enabling it painless.
 
 ## Run from source
 

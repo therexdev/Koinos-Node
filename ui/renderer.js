@@ -548,6 +548,7 @@ function renderNodeView() {
     </div>`;
 
   $("#n-open").addEventListener("click", () => call("util:openPath", { which: "nodeData" }).catch(() => {}));
+  $("#n-docker").addEventListener("click", onSetupClick);
   $("#n-start").addEventListener("click", onStartNode);
   $("#n-stop").addEventListener("click", onStopNode);
   $("#n-register").addEventListener("click", onRegisterKey);
@@ -681,27 +682,143 @@ async function loadLogs() {
   }
 }
 
+const SETUP_ICONS = { done: "✅", active: "🔵", pending: "⬜", reboot: "🔁", manual: "🔗" };
+
+function renderSetupCard(n) {
+  const setup = n.setup;
+  if (!setup) {
+    // Detection unavailable — fall back to a simple prompt with a docs link.
+    return `<div class="banner bad"><b>Docker isn't available.</b> ${esc(n.docker?.error ?? "")}<br>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" data-setup-action="openDockerDocs">Docker install guide ↗</button>
+      </div></div>`;
+  }
+
+  const platLabel = { win32: "Windows", darwin: "macOS", linux: "Linux" }[setup.platform] ?? setup.platform;
+  const stepsHtml = setup.steps
+    .map((s) => {
+      const icon = s.status === "active" ? '<span class="spin"></span>' : SETUP_ICONS[s.status] ?? "•";
+      const btn = s.action
+        ? `<button class="btn ${s.status === "reboot" ? "danger" : "primary"}" data-setup-action="${esc(s.action.channel.split(":")[1])}">${esc(s.action.label)}</button>`
+        : "";
+      const cls = s.status === "done" ? "muted" : "";
+      return `<div class="setup-step ${s.status}">
+        <div class="setup-ico">${icon}</div>
+        <div class="setup-body"><div class="setup-title ${cls}">${esc(s.title)}</div>
+          <div class="setup-detail">${esc(s.detail)}</div></div>
+        <div class="setup-act">${btn}</div>
+      </div>`;
+    })
+    .join("");
+
+  // Docker download progress (if running).
+  const op = setup.op;
+  let progressHtml = "";
+  if (op?.running && op.name === "docker-download") {
+    const p = op.progress ?? {};
+    const bytes = p.doneBytes != null ? ` — ${fmtBytes(p.doneBytes)} / ${fmtBytes(p.totalBytes)}` : "";
+    progressHtml = `<div class="banner info" style="margin-top:12px">
+      <div class="row spread"><span><span class="spin"></span> Downloading Docker Desktop${bytes}</span>
+        <button class="btn ghost" style="padding:4px 10px" data-setup-action="cancelInstallDocker">Cancel</button></div>
+      <div class="progress" style="margin-top:8px"><div style="width:${p.pct != null ? Math.min(100, p.pct).toFixed(1) : 0}%"></div></div>
+    </div>`;
+  }
+
+  return `<div class="card setup-card">
+    <div class="row spread"><h2>🧰 Set up requirements <span class="muted small">one time · ${esc(platLabel)}</span></h2>
+      <button class="btn ghost" data-setup-action="recheck">Re-check</button></div>
+    <p class="hint" style="margin-top:0">The Koinos node runs inside Docker. KoinosKit can set everything up for you — just click through the steps. It's all free.</p>
+    <div class="setup-steps">${stepsHtml}</div>
+    ${progressHtml}
+  </div>`;
+}
+
+async function onSetupClick(e) {
+  const el = e.target.closest("[data-setup-action]");
+  if (!el) return;
+  const action = el.dataset.setupAction;
+
+  if (action === "recheck") { refreshNode(); return; }
+  if (action === "openDockerDocs") { call("setup:openDockerDocs").catch(() => {}); return; }
+  if (action === "cancelInstallDocker") {
+    await call("setup:cancelInstallDocker").catch(() => {});
+    toast("Download cancelled"); refreshNode(); return;
+  }
+
+  if (action === "installWsl") {
+    busyDelegate(el, "Starting…");
+    try {
+      await call("setup:installWsl");
+      toast("Follow the Windows window to install WSL, then restart when it finishes", "good", 8000);
+    } catch (err) { toast(err.message, "bad", 8000); }
+    refreshNode();
+    return;
+  }
+
+  if (action === "restart") {
+    showModal({
+      title: "Restart Windows?",
+      body: `<p class="small">Windows needs to restart to finish enabling WSL 2. This will restart your computer in 60 seconds — save any open work first. You can cancel during the countdown.</p>`,
+      actions: [
+        { label: "Not now", onClick: (close) => close() },
+        {
+          label: "Restart in 60s", class: "danger",
+          onClick: async (close) => {
+            try {
+              await call("setup:restart");
+              close();
+              const div = document.createElement("div");
+              div.className = "toast warn";
+              div.innerHTML = `Windows will restart in 60 seconds. <button class="link">Cancel</button>`;
+              $("button", div).addEventListener("click", async () => {
+                await call("setup:cancelRestart").catch(() => {});
+                toast("Restart cancelled", "good");
+                div.remove();
+              });
+              $("#toasts").appendChild(div);
+              setTimeout(() => div.remove(), 60000);
+            } catch (err) { toast(err.message, "bad"); }
+          },
+        },
+      ],
+    });
+    return;
+  }
+
+  if (action === "installDocker") {
+    busyDelegate(el, "Starting…");
+    try {
+      await call("setup:installDocker");
+      toast("Downloading Docker Desktop — progress shows below", "good");
+    } catch (err) { toast(err.message, "bad"); }
+    refreshNode();
+    return;
+  }
+
+  if (action === "startDocker") {
+    busyDelegate(el, "Starting…");
+    try {
+      await call("setup:startDocker");
+      toast("Starting Docker — this can take a minute on first launch", "good", 7000);
+    } catch (err) { toast(err.message, "bad"); }
+    refreshNode();
+    return;
+  }
+}
+
+function busyDelegate(el, label) {
+  el.disabled = true;
+  el.innerHTML = `<span class="spin"></span> ${esc(label)}`;
+}
+
 function patchNodeView() {
   if (!$("#n-docker")) return;
   const n = S.node;
 
-  // docker banner
+  // guided setup card (shown until Docker is usable)
   const dockerEl = $("#n-docker");
   if (n?.docker && !n.docker.ok) {
-    const isLinux = S.appInfo.platform === "linux";
-    dockerEl.innerHTML = `<div class="banner bad"><b>Docker unavailable.</b> ${esc(n.docker.error)}<br>
-      <span class="muted small">The Koinos node runs as Docker containers, so Docker must be installed and running first. It's free.</span>
-      <div class="row" style="margin-top:10px">
-        <button id="n-docker-get" class="btn">⬇️ ${isLinux ? "Install Docker Engine" : "Download Docker Desktop"}</button>
-        <span class="muted small">${isLinux ? "docs.docker.com/engine/install" : "docker.com — then install, start it, and come back"}</span>
-      </div></div>`;
-    $("#n-docker-get").addEventListener("click", () =>
-      call("util:openExternal", {
-        url: isLinux
-          ? "https://docs.docker.com/engine/install/"
-          : "https://www.docker.com/products/docker-desktop/",
-      }).catch(() => {})
-    );
+    dockerEl.innerHTML = renderSetupCard(n);
   } else {
     dockerEl.innerHTML = "";
   }

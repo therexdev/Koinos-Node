@@ -1,0 +1,20 @@
+{
+  "name": "koinos-node-desktop",
+  "productName": "Koinos Node Desktop",
+  "version": "0.1.0",
+  "description": "Desktop app to create a Koinos wallet, burn KOIN to VHP, and run a block-producing Koinos node with automatic reward returns",
+  "main": "electron/main.js",
+  "private": true,
+  "license": "MIT",
+  "author": "mikemilas",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "koilib": "^9.2.0"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0"
+  }
+}

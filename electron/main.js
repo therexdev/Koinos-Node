@@ -11,6 +11,7 @@ const { ChainService } = require("./lib/chain");
 const { NodeManager } = require("./lib/node-manager");
 const { SetupService } = require("./lib/setup");
 const { RewardEngine } = require("./lib/rewards");
+const { ProducerStats } = require("./lib/producer-stats");
 
 // Optional override so the guided-setup UI can be exercised for other
 // platforms during development/screenshots. Never set in production.
@@ -53,7 +54,7 @@ function createWindow() {
     win.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
         try {
-          for (const view of ["wallet", "burn", "node", "returns", "settings"]) {
+          for (const view of ["dashboard", "wallet", "burn", "node", "returns", "settings"]) {
             await win.webContents.executeJavaScript(
               `document.querySelector('[data-view="${view}"]').click()`
             );
@@ -104,8 +105,9 @@ if (!gotLock) {
     });
     const rewards = new RewardEngine({ chain, wallet, settings, state, onEvent: sendEvent });
     rewards.start();
+    const stats = new ProducerStats({ chain, state });
 
-    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, userData });
+    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, userData });
     createWindow();
     setupAutoUpdates();
 
@@ -157,7 +159,7 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, userData }) {
+function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, userData }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
@@ -348,6 +350,46 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, userDat
   handle("node:quickSyncInfo", () => nodeMgr.quickSyncInfo(chain.network().id));
   handle("node:quickSync", () => nodeMgr.quickSync(chain.network().id));
   handle("node:quickSyncCancel", () => nodeMgr.cancelQuickSync());
+
+  // ----- dashboard -----
+  handle("dashboard:summary", async () => {
+    const net = chain.network();
+    const address = wallet.address;
+    const ws = wallet.status();
+    const out = {
+      network: { id: net.id, label: net.label, tokenSymbol: net.tokenSymbol, explorer: net.explorer },
+      wallet: { exists: ws.exists, unlocked: ws.unlocked, address },
+      node: null,
+      balances: null,
+      stats: null,
+      rewards: rewards.status().config,
+    };
+    // Node running state (docker + services).
+    try {
+      const ns = await nodeMgr.status(net.id);
+      out.node = {
+        docker: ns.docker,
+        isRunning: ns.isRunning,
+        runningCount: ns.runningCount,
+        op: ns.op,
+        producerRegistered: null,
+      };
+      if (ns.isRunning) {
+        out.sync = await chain.syncStatus().catch(() => null);
+      }
+    } catch (e) {
+      out.node = { error: String(e.message) };
+    }
+    if (!address) return out;
+    // Balances + producer stats (both hit the RPC).
+    const [balances, statsRes] = await Promise.all([
+      chain.balances(address).catch((e) => ({ error: String(e.message) })),
+      stats.refresh(address).catch((e) => ({ available: false, error: String(e.message) })),
+    ]);
+    out.balances = balances;
+    out.stats = statsRes;
+    return out;
+  });
 
   // ----- rewards -----
   handle("rewards:status", () => rewards.status());

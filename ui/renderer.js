@@ -18,7 +18,9 @@ const S = {
   node: null,         // node:status
   producer: null,     // producer:status
   rewards: null,      // rewards:status
-  view: "wallet",
+  dashboard: null,    // dashboard:summary
+  dashboardRendered: false,
+  view: "dashboard",
   walletStage: null,  // "none" | "locked" | "unlocked"
   pendingWif: null,   // shown once after create
 };
@@ -162,6 +164,194 @@ async function refreshRewards() {
     S.rewards = await call("rewards:status");
     patchReturnsView();
   } catch { /* ignore */ }
+}
+
+// ---------- dashboard ----------
+
+async function refreshDashboard() {
+  try {
+    S.dashboard = await call("dashboard:summary");
+  } catch (e) {
+    S.dashboard = { error: e.message };
+  }
+  if (!S.dashboardRendered) renderDashboardView();
+  patchDashboardView();
+}
+
+function renderDashboardView() {
+  const root = $("#view-dashboard");
+  root.innerHTML = `
+    <div class="row spread">
+      <h1>Dashboard</h1>
+      <span class="muted small" id="d-updated"></span>
+    </div>
+    <div class="card status-card">
+      <div class="row spread">
+        <div>
+          <div class="status-line"><span class="dot" id="d-dot"></span><span id="d-status-text">Loading…</span></div>
+          <div class="muted small" id="d-status-sub"></div>
+        </div>
+        <button id="d-toggle" class="btn primary" data-action="">…</button>
+      </div>
+      <div id="d-sync"></div>
+    </div>
+    <div class="widget-grid" id="d-tiles"></div>
+    <div class="card">
+      <div class="row spread"><h2>📡 Activity feed</h2><span class="muted small" id="d-feed-note"></span></div>
+      <div class="feed" id="d-feed"><span class="muted small">Loading…</span></div>
+    </div>`;
+  $("#d-toggle").addEventListener("click", onDashToggle);
+  $("#d-feed").addEventListener("click", (e) => {
+    const el = e.target.closest("[data-tx]");
+    if (el) openTx(el.dataset.tx);
+  });
+  S.dashboardRendered = true;
+}
+
+function tile(label, value, sub, cls) {
+  return `<div class="tile ${cls || ""}"><div class="t-label">${esc(label)}</div>
+    <div class="t-value">${value}</div><div class="t-sub">${esc(sub || "")}</div></div>`;
+}
+
+function patchDashboardView() {
+  if (!S.dashboardRendered) return;
+  const d = S.dashboard;
+  if (!d || d.error) {
+    if ($("#d-status-text")) $("#d-status-text").textContent = "Can't reach the app";
+    return;
+  }
+  const symbol = d.network.tokenSymbol;
+  const running = !!(d.node && d.node.isRunning);
+  const dockerOk = d.node && d.node.docker && d.node.docker.ok;
+
+  const dot = $("#d-dot");
+  const text = $("#d-status-text");
+  const sub = $("#d-status-sub");
+  const toggle = $("#d-toggle");
+  dot.className = "dot " + (running ? "green" : "red");
+  if (running) {
+    text.textContent = "● Running";
+    text.className = "status-text good-text";
+    const op = d.node.op;
+    sub.textContent = op && op.running ? `${op.name} in progress…` : `${d.node.runningCount} services · ${d.network.label}`;
+    toggle.textContent = "Stop node";
+    toggle.className = "btn danger";
+    toggle.dataset.action = "stop";
+  } else if (!dockerOk) {
+    text.textContent = "● Offline";
+    text.className = "status-text bad-text";
+    sub.textContent = "Docker not ready — finish setup on the Node tab";
+    toggle.textContent = "Set up node";
+    toggle.className = "btn";
+    toggle.dataset.action = "setup";
+  } else {
+    text.textContent = "● Offline";
+    text.className = "status-text bad-text";
+    sub.textContent = `Node stopped · ${d.network.label}`;
+    toggle.textContent = "Start node";
+    toggle.className = "btn primary";
+    toggle.dataset.action = "start";
+  }
+  toggle.disabled = false;
+
+  const syncEl = $("#d-sync");
+  const sync = d.sync;
+  if (running && sync && !sync.local?.error) {
+    const pct = sync.progressPct != null ? sync.progressPct : sync.inSync ? 100 : 0;
+    syncEl.innerHTML = `<div class="row spread" style="margin-top:12px">
+      <span>${sync.inSync ? '<span class="pill good">in sync</span>' : '<span class="pill warn">syncing</span>'}</span>
+      <span class="mono small">${sync.local.height.toLocaleString()}${sync.remote ? " / " + sync.remote.height.toLocaleString() : ""} blocks</span></div>
+      <div class="progress" style="margin-top:6px"><div style="width:${Math.min(100, pct).toFixed(1)}%"></div></div>`;
+  } else {
+    syncEl.innerHTML = "";
+  }
+
+  // stat tiles
+  const b = d.balances && !d.balances.error ? d.balances : null;
+  const st = d.stats && d.stats.available ? d.stats : null;
+  const totals = st && st.totals ? st.totals : null;
+  const netWorth = b ? (BigInt(b.koin) + BigInt(b.vhp)).toString() : null;
+  const tiles = [
+    tile(symbol + " liquid", b ? fmtSat(b.koin, 4) : "—", "spendable + mana"),
+    tile("VHP", b ? fmtSat(b.vhp, 4) : "—", "producing stake", "accent"),
+    tile("Mana", b ? fmtSat(b.mana, 4) : "—", "recharges over time"),
+    tile("Net worth", netWorth ? fmtSat(netWorth, 2) : "—", symbol + " + VHP", "accent"),
+    tile("Blocks produced", totals ? totals.blocks.toLocaleString() : "—", st && st.syncing ? "counting…" : "lifetime"),
+    tile("Total rewards", totals ? fmtSat(totals.rewards, 4) : "—", symbol + " minted", "good"),
+    tile("VHP consumed", totals ? fmtSat(totals.vhpConsumed, 4) : "—", "spent producing"),
+    tile("Profit", totals ? fmtSat(totals.profit, 4) : "—", "rewards − VHP spent", "good"),
+    tile("Total burned", totals ? fmtSat(totals.burned, 4) : "—", symbol + " → VHP"),
+    tile("Deposits in", totals ? fmtSat(totals.depositsIn, 4) : "—", symbol + " received"),
+  ];
+  $("#d-tiles").innerHTML = tiles.join("");
+
+  // feed
+  const feedEl = $("#d-feed");
+  const note = $("#d-feed-note");
+  if (!d.wallet.exists) {
+    feedEl.innerHTML = `<span class="muted small">Create a wallet (Wallet tab) to see activity.</span>`;
+    note.textContent = "";
+  } else if (!st) {
+    feedEl.innerHTML = `<span class="muted small">Activity history isn't available on ${esc(d.network.label)} — it needs a history RPC (works on mainnet).</span>`;
+    note.textContent = "";
+  } else if (!st.feed.length) {
+    feedEl.innerHTML = `<span class="muted small">No activity yet. When your node produces a block, it appears here.</span>`;
+    note.textContent = st.syncing ? "syncing…" : "";
+  } else {
+    note.textContent = st.syncing ? "totals still syncing…" : "";
+    feedEl.innerHTML = st.feed.map((f) => feedRow(symbol, f)).join("");
+  }
+  $("#d-updated").textContent = st && st.updatedAt ? "updated " + new Date(st.updatedAt).toLocaleTimeString() : "";
+}
+
+function feedRow(symbol, f) {
+  if (f.type === "block") {
+    return `<div class="feed-row">
+      <span class="fr-ico">🧊</span>
+      <span class="fr-main">Block <span class="mono">#${f.height.toLocaleString()}</span></span>
+      <span class="fr-metric burn">🔥 ${fmtSat(f.vhpBurned, 4)}</span>
+      <span class="fr-metric reward">🪙 ${fmtSat(f.reward, 4)}</span>
+      <span class="fr-metric profit">💰 ${fmtSat(f.profit, 4)}</span>
+      <span class="fr-time">${new Date(f.time).toLocaleTimeString()}</span>
+    </div>`;
+  }
+  const map = {
+    deposit: ["📥", "Deposit"],
+    burn: ["🔥", "Burned → VHP"],
+    sent: ["📤", "Sent out"],
+  };
+  const [ico, label] = map[f.type] || ["•", f.type];
+  return `<div class="feed-row ${f.id ? "link" : ""}" ${f.id ? `data-tx="${esc(f.id)}"` : ""}>
+    <span class="fr-ico">${ico}</span>
+    <span class="fr-main">${esc(label)}</span>
+    <span class="fr-metric">${fmtSat(f.amount, 4)} ${esc(symbol)}</span>
+    <span class="fr-time">${f.id ? esc(shortTx(f.id)) : ""}</span>
+  </div>`;
+}
+
+async function onDashToggle(e) {
+  const btn = e.currentTarget;
+  const action = btn.dataset.action;
+  if (action === "setup") return switchView("node");
+  if (action === "start") {
+    busyButton(btn, true, "Starting…");
+    try {
+      await call("node:start", { produce: !!(S.dashboard && S.dashboard.wallet.exists) });
+      toast("Node starting…", "good");
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+    refreshDashboard();
+  } else if (action === "stop") {
+    busyButton(btn, true, "Stopping…");
+    try {
+      await call("node:stop");
+      toast("Stopping node…");
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+    refreshDashboard();
+  }
 }
 
 // ---------- wallet view ----------
@@ -1214,6 +1404,7 @@ function switchView(view) {
   S.view = view;
   $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
+  if (view === "dashboard") refreshDashboard();
   if (view === "node") refreshNode();
   if (view === "returns") refreshRewards();
   if (view === "wallet" || view === "burn") refreshBalances();
@@ -1222,6 +1413,7 @@ function switchView(view) {
 async function heartbeat() {
   try {
     await refreshWallet();
+    if (S.view === "dashboard") await refreshDashboard();
     if (S.view === "wallet" || S.view === "burn") await refreshBalances();
     if (S.view === "node") await refreshNode();
     if (S.view === "returns") await refreshRewards();
@@ -1241,12 +1433,15 @@ async function init() {
     }
     if (evt.type === "node" && S.view === "node") refreshNode();
     if (evt.type === "rewards") { refreshRewards(); S.balancesAt = 0; }
+    if (S.view === "dashboard") refreshDashboard();
   });
 
   await refreshWallet();
+  renderDashboardView();
   renderNodeView();
   renderReturnsView();
   renderSettingsView();
+  refreshDashboard();
   refreshRewards();
 
   setInterval(heartbeat, 5000);

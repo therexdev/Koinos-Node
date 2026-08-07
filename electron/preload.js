@@ -34,6 +34,7 @@ const CHANNELS = new Set([
   "setup:cancelInstallDocker",
   "setup:startDocker",
   "setup:openDockerDocs",
+  "dashboard:summary",
   "rewards:status",
   "rewards:configure",
   "rewards:runNow",

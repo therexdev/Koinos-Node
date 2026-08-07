@@ -296,6 +296,21 @@ class ChainService {
     }
   }
 
+  // Account history (block-production records, transfers) from the configured
+  // RPC. Requires the RPC to run the account_history microservice — the public
+  // mainnet endpoint does; a bare local node does not.
+  async getAccountHistory(address, { limit = 100, seqNum, ascending = true } = {}) {
+    const provider = this.provider();
+    const params = { address, limit, ascending, irreversible: false };
+    if (seqNum !== undefined && seqNum !== null) params.seq_num = String(seqNum);
+    try {
+      const res = await provider.call("account_history.get_account_history", params);
+      return res?.values ?? [];
+    } catch (e) {
+      throw rpcError(e);
+    }
+  }
+
   async registeredPublicKey(producer) {
     try {
       const pob = await this._contract("pob");

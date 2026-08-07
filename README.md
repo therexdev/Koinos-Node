@@ -2,14 +2,27 @@
 
 A desktop app that makes running a Koinos block producer simple:
 
-1. **Create a Koinos wallet** — generated locally, encrypted with your password.
-2. **Burn KOIN → VHP** — one click to convert liquid KOIN into Virtual Hash Power, the stake that produces blocks.
-3. **Launch a Koinos node** — the official Koinos microservices, managed for you through Docker, with guided block-producer setup.
-4. **Reward returns** — set a percentage of earned block rewards to return automatically: compound them back into VHP to keep your node producing, or send them to any address.
+1. **Dashboard** — an at-a-glance widget view: node status with one-click start/stop, live balances and net worth, lifetime blocks/rewards/profit, and an activity feed showing the VHP burned, reward, and profit for every block you produce.
+2. **Create a Koinos wallet** — generated locally, encrypted with your password.
+3. **Burn KOIN → VHP** — one click to convert liquid KOIN into Virtual Hash Power, the stake that produces blocks.
+4. **Launch a Koinos node** — the official Koinos microservices, managed for you through Docker, with guided block-producer setup.
+5. **Reward returns** — set a percentage of earned block rewards to return automatically: compound them back into VHP to keep your node producing, or send them to any address.
 
-| Wallet | Node | Reward returns |
-| --- | --- | --- |
-| ![Wallet](docs/screenshots/wallet.png) | ![Node](docs/screenshots/node.png) | ![Returns](docs/screenshots/returns.png) |
+![Dashboard](docs/screenshots/dashboard.png)
+
+| Node | Reward returns |
+| --- | --- |
+| ![Node](docs/screenshots/node.png) | ![Returns](docs/screenshots/returns.png) |
+
+### Dashboard
+
+The home screen is a widget-style dashboard:
+
+- **Status widget** — a pulsing green "● Running" / red "● Offline" indicator and a one-click Start/Stop button (with a live sync bar while the chain catches up).
+- **Stat tiles** — liquid KOIN, VHP, mana, net worth (KOIN + VHP), lifetime blocks produced, total rewards, VHP consumed, **profit** (rewards − VHP spent), total burned, and deposits in.
+- **Activity feed** — recent blocks and transfers pulled from on-chain account history, each block row showing 🔥 VHP burned, 🪙 reward, and 💰 profit, so you can see exactly what each block earned.
+
+Totals are read from your producer's account history (decoded from the block reward/burn events) and cached incrementally so refreshes stay cheap. History needs an `account_history` RPC — the public mainnet endpoint provides it.
 
 ## Install
 

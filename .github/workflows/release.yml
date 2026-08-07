@@ -2,19 +2,39 @@ name: Release installers
 
 # Builds and publishes installers to a GitHub Release whenever a version tag
 # is pushed:  npm version minor && git push --follow-tags
+# Also runnable manually (Actions tab → Release installers → Run workflow).
 on:
   push:
     tags: ["v*"]
-  # Manual trigger (Actions tab → Release installers → Run workflow) — builds
-  # from the chosen ref and publishes to the release matching package.json's
-  # version. Handy when a runner flakes on a tag build.
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  # Create the release once, up front, as a draft. This avoids the race where
+  # three parallel build jobs each try to CREATE the release and all but one
+  # get "422 already_exists".
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure a draft release exists for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing it."
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "$TAG" \
+              --notes "Automated build of $TAG. Windows, macOS and Linux installers are attached below."
+          fi
+
+  # Each OS builds and uploads its installer to the existing draft release.
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -32,8 +52,19 @@ jobs:
 
       - run: npm test
 
-      # Builds the installer for the runner's OS and uploads it (plus the
-      # auto-update metadata files) to the release for this tag.
+      # publish.releaseType is "draft", so electron-builder finds the draft
+      # created above (matched by tag) and just uploads to it — no create race.
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Once every OS has uploaded, flip the draft to a published release and mark
+  # it "latest" so the download page and the in-app auto-updater pick it up.
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --draft=false --latest

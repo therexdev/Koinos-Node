@@ -388,6 +388,20 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     ]);
     out.balances = balances;
     out.stats = statsRes;
+
+    // Screenshot/demo-only override (never set in production): present a
+    // running, synced node with representative balances so marketing shots
+    // show a live dashboard.
+    if (process.env.KND_DEMO) {
+      out.node = { docker: { ok: true }, isRunning: true, runningCount: 7, op: null };
+      out.sync = {
+        inSync: true,
+        local: { height: 38297044, headBlockTimeMs: Date.now(), error: null },
+        remote: { height: 38297044 },
+        progressPct: 100,
+      };
+      out.balances = { koin: "4308560000", vhp: "228813610000", mana: "3822790000" };
+    }
     return out;
   });
 

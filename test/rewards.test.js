@@ -2,43 +2,65 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { computeReturnPlan, validateRewardsConfig } = require("../electron/lib/rewards");
+const { computeReturn, validateRewardsConfig } = require("../electron/lib/rewards");
 
 const KOIN = (n) => String(BigInt(n) * 100000000n);
+const base = { pct: 80, minReturnSat: KOIN(1), availableLiquidSat: KOIN(1000) };
 
-test("no change means no action", () => {
-  const plan = computeReturnPlan({ baseline: KOIN(100), current: KOIN(100), pct: 50, minReturnSat: KOIN(1) });
-  assert.equal(plan.action, "none");
+test("no rewards yet -> accumulate nothing", () => {
+  const p = computeReturn({ rewardsSinceEnable: "0", returnedSoFar: "0", ...base });
+  assert.equal(p.action, "accumulate");
+  assert.equal(p.returnAmount, "0");
 });
 
-test("balance decrease resets baseline", () => {
-  const plan = computeReturnPlan({ baseline: KOIN(100), current: KOIN(90), pct: 50, minReturnSat: KOIN(1) });
-  assert.equal(plan.action, "reset");
+test("returns the configured percentage of real rewards", () => {
+  const p = computeReturn({ rewardsSinceEnable: KOIN(10), returnedSoFar: "0", ...base });
+  assert.equal(p.action, "return");
+  assert.equal(p.desired, KOIN(8)); // 80% of 10
+  assert.equal(p.returnAmount, KOIN(8));
+});
+
+test("only the not-yet-returned remainder is returned", () => {
+  // 10 KOIN rewards, 80% target = 8, already returned 5 -> return 3 more
+  const p = computeReturn({ rewardsSinceEnable: KOIN(10), returnedSoFar: KOIN(5), ...base });
+  assert.equal(p.action, "return");
+  assert.equal(p.pending, KOIN(3));
+  assert.equal(p.returnAmount, KOIN(3));
+});
+
+test("once caught up to target, nothing pending", () => {
+  const p = computeReturn({ rewardsSinceEnable: KOIN(10), returnedSoFar: KOIN(8), ...base });
+  assert.equal(p.action, "accumulate");
+  assert.equal(p.pending, "0");
 });
 
 test("small rewards accumulate below the minimum", () => {
-  const plan = computeReturnPlan({ baseline: KOIN(100), current: KOIN(101), pct: 50, minReturnSat: KOIN(1) });
-  // 1 KOIN of rewards at 50% -> 0.5 KOIN return, below 1 KOIN minimum
-  assert.equal(plan.action, "accumulate");
-  assert.equal(plan.returnAmount, "50000000");
+  const p = computeReturn({ rewardsSinceEnable: KOIN(1), returnedSoFar: "0", pct: 50, minReturnSat: KOIN(1), availableLiquidSat: KOIN(100) });
+  assert.equal(p.action, "accumulate"); // 50% of 1 = 0.5 < 1
 });
 
-test("returns the configured percentage once above the minimum", () => {
-  const plan = computeReturnPlan({ baseline: KOIN(100), current: KOIN(110), pct: 50, minReturnSat: KOIN(1) });
-  assert.equal(plan.action, "return");
-  assert.equal(plan.delta, KOIN(10));
-  assert.equal(plan.returnAmount, KOIN(5));
+test("return is capped by available liquid above the mana buffer", () => {
+  const p = computeReturn({ rewardsSinceEnable: KOIN(10), returnedSoFar: "0", pct: 80, minReturnSat: KOIN(1), availableLiquidSat: KOIN(5) });
+  assert.equal(p.action, "return");
+  assert.equal(p.pending, KOIN(8));
+  assert.equal(p.returnAmount, KOIN(5)); // capped
 });
 
-test("fractional percentages work", () => {
-  const plan = computeReturnPlan({ baseline: "0", current: KOIN(100), pct: 12.5, minReturnSat: "1" });
-  assert.equal(plan.returnAmount, "1250000000");
+test("too little liquid to meet the minimum -> insufficient-liquid", () => {
+  const p = computeReturn({ rewardsSinceEnable: KOIN(10), returnedSoFar: "0", pct: 80, minReturnSat: KOIN(1), availableLiquidSat: "50000000" });
+  assert.equal(p.action, "insufficient-liquid");
+  assert.equal(p.returnAmount, "0");
 });
 
-test("zero percent never returns", () => {
-  const plan = computeReturnPlan({ baseline: "0", current: KOIN(100), pct: 0, minReturnSat: "1" });
-  assert.equal(plan.action, "accumulate");
-  assert.equal(plan.returnAmount, "0");
+test("0% never returns", () => {
+  const p = computeReturn({ rewardsSinceEnable: KOIN(100), returnedSoFar: "0", pct: 0, minReturnSat: KOIN(1), availableLiquidSat: KOIN(1000) });
+  assert.equal(p.action, "accumulate");
+});
+
+test("deposits/burns can't inflate rewards (returnable clamps at 0)", () => {
+  const p = computeReturn({ rewardsSinceEnable: "-500000000", returnedSoFar: "0", ...base });
+  assert.equal(p.action, "accumulate");
+  assert.equal(p.returnAmount, "0");
 });
 
 test("validateRewardsConfig normalizes and rejects bad values", () => {

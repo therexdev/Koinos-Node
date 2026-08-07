@@ -103,9 +103,9 @@ if (!gotLock) {
       state,
       onEvent: sendEvent,
     });
-    const rewards = new RewardEngine({ chain, wallet, settings, state, onEvent: sendEvent });
-    rewards.start();
     const stats = new ProducerStats({ chain, state });
+    const rewards = new RewardEngine({ chain, wallet, settings, state, stats, onEvent: sendEvent });
+    rewards.start();
 
     registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, userData });
     createWindow();

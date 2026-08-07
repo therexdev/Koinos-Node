@@ -1149,7 +1149,7 @@ function renderReturnsView() {
           <button id="r-save" class="btn primary">Save</button>
           <button id="r-now" class="btn">Check now</button>
         </div>
-        <p class="hint">Returns are signed locally, so the app must be open with the wallet unlocked. Rewards are detected as increases of the wallet's liquid ${esc(sym())} — use this wallet only for producing to keep the numbers accurate.</p>
+        <p class="hint">Returns are signed locally, so the app must be open with the wallet unlocked. Rewards are read from your node's on-chain block-reward events (the same figure shown on the Dashboard), so deposits and manual burns are never counted.</p>
       </div>
       <div class="card">
         <h2>📊 Status</h2>
@@ -1158,7 +1158,7 @@ function renderReturnsView() {
     </div>
     <div class="card">
       <h2>🧾 Return history</h2>
-      <table><thead><tr><th>When</th><th>Rewards detected</th><th>Returned</th><th>Mode</th><th>Tx</th></tr></thead>
+      <table><thead><tr><th>When</th><th>Returned</th><th>Mode</th><th>Tx</th></tr></thead>
       <tbody id="r-history"></tbody></table>
     </div>`;
 
@@ -1214,10 +1214,11 @@ const OUTCOME_LABELS = {
   "no-wallet": ["pill warn", "no wallet"],
   locked: ["pill warn", "wallet locked"],
   "rpc-error": ["pill bad", "RPC error"],
-  "baseline-set": ["pill accent", "baseline set"],
-  "baseline-reset": ["pill accent", "baseline reset"],
-  "no-rewards": ["pill", "no new rewards"],
+  "history-unavailable": ["pill bad", "no history RPC"],
+  syncing: ["pill accent", "reading history…"],
+  anchored: ["pill accent", "tracking started"],
   accumulating: ["pill accent", "accumulating"],
+  "insufficient-liquid": ["pill warn", "low liquid KOIN"],
   returned: ["pill good", "returned"],
   "tx-error": ["pill bad", "tx failed"],
   "config-error": ["pill bad", "config error"],
@@ -1228,10 +1229,9 @@ function patchReturnsView() {
   if (!statusEl) return;
   const r = S.rewards;
   if (!r) { statusEl.innerHTML = `<span class="muted">Loading…</span>`; return; }
-  const st = r.state;
+  const d = r.derived;
   const last = r.last;
   const [pillClass, pillLabel] = last ? OUTCOME_LABELS[last.outcome] ?? ["pill", last.outcome] : ["pill", "no checks yet"];
-  const pending = last?.plan?.delta && last.outcome !== "returned" ? last.plan.delta : null;
   statusEl.innerHTML = `
     <div class="row spread"><span class="muted">Engine</span>
       <span class="pill ${r.config.enabled ? "good" : "warn"}">${r.config.enabled ? "enabled" : "disabled"}</span></div>
@@ -1241,27 +1241,26 @@ function patchReturnsView() {
     <div class="row spread"><span class="muted">Next automatic check</span>
       <span class="small mono">${r.nextRunAt ? fmtTime(r.nextRunAt) : "—"}</span></div>
     <hr style="border-color:var(--border);border-style:solid;opacity:.4">
-    <div class="row spread"><span class="muted">Pending rewards (since baseline)</span>
-      <span class="mono">${pending ? fmtSat(pending, 4) + " " + sym() : "—"}</span></div>
-    <div class="row spread"><span class="muted">Total rewards detected</span>
-      <span class="mono">${st ? fmtSat(st.totals.detected, 4) : "0"} ${sym()}</span></div>
-    <div class="row spread"><span class="muted">Total returned</span>
-      <span class="mono">${st ? fmtSat(st.totals.returned, 4) : "0"} ${sym()}</span></div>
-    <div class="row spread"><span class="muted">Tracking baseline</span>
-      <span class="mono small">${st?.baseline != null ? fmtSat(st.baseline, 4) + " " + sym() : "not set yet"}</span></div>`;
+    <div class="row spread"><span class="muted">Lifetime rewards <span class="small">(Dashboard)</span></span>
+      <span class="mono">${d ? fmtSat(d.lifetimeRewards, 4) : "0"} ${sym()}</span></div>
+    <div class="row spread"><span class="muted">Rewards since enabled</span>
+      <span class="mono">${d && d.anchored ? fmtSat(d.rewardsSinceEnable, 4) : "—"} ${sym()}</span></div>
+    <div class="row spread"><span class="muted">Returned</span>
+      <span class="mono">${d ? fmtSat(d.returned, 4) : "0"} ${sym()}</span></div>
+    <div class="row spread"><span class="muted">Pending return</span>
+      <span class="mono">${d ? fmtSat(d.pending, 4) : "0"} ${sym()}</span></div>`;
 
   const hist = $("#r-history");
   if (hist) {
-    const rows = (st?.actions ?? []).map((a) => {
+    const rows = (d?.actions ?? []).map((a) => {
       return `<tr>
         <td class="small">${fmtTime(a.time)}</td>
-        <td class="mono">${fmtSat(a.rewards, 4)}</td>
         <td class="mono">${fmtSat(a.amount, 4)}</td>
         <td>${a.mode === "burn" ? "♻️ VHP" : "📤 send"}</td>
         <td><button class="link" data-tx="${esc(a.txId)}">${esc(shortTx(a.txId))}</button></td>
       </tr>`;
     });
-    hist.innerHTML = rows.join("") || `<tr><td colspan="5" class="muted">No returns yet.</td></tr>`;
+    hist.innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">No returns yet.</td></tr>`;
     $$("button[data-tx]", hist).forEach((b) =>
       b.addEventListener("click", () => openTx(b.dataset.tx))
     );

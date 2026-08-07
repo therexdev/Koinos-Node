@@ -123,15 +123,15 @@ the remaining days-worth of blocks in minutes-to-hours. Mainnet only.
 
 ## How reward returns work
 
-- The engine tracks your wallet's liquid KOIN balance. On a dedicated producer wallet, balance increases are block rewards.
-- Every check interval (default 10 minutes) it computes new rewards since the last baseline and, once `rewards × percentage` reaches the minimum (default 1 KOIN), executes the return:
-  - **Compound (default):** burns that KOIN back into VHP via the PoB contract — sustaining your node's hash power.
+- Rewards are read from your node's **actual on-chain block-reward events** (the KOIN minted to you when you produce a block) — the exact same figure shown on the Dashboard. Deposits, transfers, and manual burns are **never** mistaken for rewards.
+- When you enable returns, the engine anchors at your current lifetime rewards and tracks everything earned from that point on. Every check interval (default 10 minutes) it targets `rewards-since-enabled × percentage`, and once the not-yet-returned remainder reaches the minimum (default 1 KOIN) it executes:
+  - **Compound (default):** burns that KOIN back into VHP via the PoB contract — replenishing the VHP each block consumes and sustaining your hash power.
   - **Send:** transfers that KOIN to an address you choose.
-- Everything is signed locally, so **the app must be open and the wallet unlocked** for automatic returns to execute. Pending rewards are simply carried forward until then.
-- If the balance decreases (you spent or burned manually), the baseline resets — nothing is double-counted.
-- Totals and a full return history (with transaction links) are shown in the app.
+- Returns are capped by your liquid KOIN above the mana buffer (Settings), so automatic returns never strand you without mana.
+- Everything is signed locally, so **the app must be open and the wallet unlocked** for automatic returns to execute. Pending returns are carried forward until then.
+- The Reward-returns tab shows lifetime rewards (matching the Dashboard), rewards since enabling, amount returned, and the pending return, plus a full return history with transaction links.
 
-Use a dedicated wallet for producing: deposits from elsewhere are indistinguishable from rewards and would be counted as such.
+Because rewards come from on-chain production events rather than balance changes, the same wallet can safely receive deposits and do manual burns without throwing off the numbers.
 
 ## Networks
 

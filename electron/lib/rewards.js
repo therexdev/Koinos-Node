@@ -1,23 +1,30 @@
 "use strict";
 
-const { parseAmount, percentOf, addSats, subSats, formatAmount } = require("./format");
+const { parseAmount, percentOf, addSats, subSats, cmpSats, formatAmount } = require("./format");
 
-// Decides what to do given the KOIN balance movement since the last baseline.
-// Balance increases on a dedicated producer wallet are block rewards; a
-// decrease means the user spent/burned manually, so the baseline resets.
-function computeReturnPlan({ baseline, current, pct, minReturnSat }) {
-  const delta = subSats(current, baseline);
-  if (BigInt(delta) < 0n) {
-    return { delta, action: "reset", returnAmount: "0" };
+// Given the real block rewards earned since auto-returns were enabled, decide
+// how much to return now. Pure and unit-tested. Everything is in satoshis.
+//
+//   returnable  = rewards actually minted to the wallet from producing blocks,
+//                 since the engine was enabled (NOT balance deltas — so
+//                 deposits and manual burns never count as "rewards").
+//   desired     = returnable * pct
+//   pending     = desired - already returned
+function computeReturn({ rewardsSinceEnable, returnedSoFar, pct, minReturnSat, availableLiquidSat }) {
+  const returnable = cmpSats(rewardsSinceEnable, "0") > 0 ? rewardsSinceEnable : "0";
+  const desired = percentOf(returnable, pct);
+  let pending = subSats(desired, returnedSoFar);
+  if (cmpSats(pending, "0") < 0) pending = "0";
+
+  if (cmpSats(pending, minReturnSat) < 0 || cmpSats(pending, "0") === 0) {
+    return { action: "accumulate", returnAmount: "0", desired, pending };
   }
-  if (BigInt(delta) === 0n) {
-    return { delta, action: "none", returnAmount: "0" };
+  // Never return more liquid KOIN than is available above the mana buffer.
+  const amount = cmpSats(pending, availableLiquidSat) <= 0 ? pending : availableLiquidSat;
+  if (cmpSats(amount, minReturnSat) < 0) {
+    return { action: "insufficient-liquid", returnAmount: "0", desired, pending };
   }
-  const returnAmount = percentOf(delta, pct);
-  if (BigInt(returnAmount) < BigInt(minReturnSat) || BigInt(returnAmount) === 0n) {
-    return { delta, action: "accumulate", returnAmount };
-  }
-  return { delta, action: "return", returnAmount };
+  return { action: "return", returnAmount: amount, desired, pending };
 }
 
 function validateRewardsConfig(cfg) {
@@ -43,19 +50,21 @@ function validateRewardsConfig(cfg) {
   };
 }
 
-// Periodically checks the producer wallet for new block rewards and returns
-// the configured percentage — either burned back to VHP (compounding the
-// node's hash power) or sent to a chosen address.
+// Periodically compounds/sends the configured percentage of the block rewards
+// the node actually earns. Rewards are read from on-chain block-reward events
+// (via ProducerStats) — the same source the Dashboard uses — so the two always
+// agree, and deposits or manual burns are never mistaken for rewards.
 class RewardEngine {
-  constructor({ chain, wallet, settings, state, onEvent }) {
+  constructor({ chain, wallet, settings, state, stats, onEvent }) {
     this.chain = chain;
     this.wallet = wallet;
     this.settings = settings;
     this.state = state;
+    this.stats = stats;
     this.onEvent = onEvent || (() => {});
     this._timer = null;
     this._busy = false;
-    this.last = null; // { time, trigger, outcome, detail }
+    this.last = null;
     this.nextRunAt = null;
   }
 
@@ -92,15 +101,18 @@ class RewardEngine {
   }
 
   _stateKey(networkId, address) {
-    return `rewards.${networkId}.${address}`;
+    return `returns.${networkId}.${address}`;
   }
 
   _readState(key) {
-    return this.state.get(key, null) ?? {
-      baseline: null,
-      totals: { detected: "0", returned: "0" },
-      actions: [],
-    };
+    return (
+      this.state.get(key, null) ?? {
+        anchor: null,          // lifetime rewards (sat) when auto-returns began
+        returned: "0",         // KOIN returned since then
+        lifetimeRewards: "0",  // last-seen lifetime rewards, for display
+        actions: [],
+      }
+    );
   }
 
   async tick(trigger = "timer") {
@@ -122,54 +134,85 @@ class RewardEngine {
     if (!cfg.enabled && trigger === "timer") return done("disabled");
     const ws = this.wallet.status();
     if (!ws.exists) return done("no-wallet");
-    if (!ws.unlocked) return done("locked", { message: "Wallet is locked — unlock it so returns can be signed." });
 
     const networkId = this.chain.network().id;
     const address = ws.address;
     const key = this._stateKey(networkId, address);
 
+    // Real block rewards come from ProducerStats (on-chain reward events).
+    let statsRes;
+    try {
+      statsRes = await this.stats.refresh(address);
+    } catch (e) {
+      return done("rpc-error", { message: String(e.message) });
+    }
+    if (!statsRes || statsRes.available === false) {
+      return done("history-unavailable", {
+        message: "Block-reward history isn't available on this network's RPC, so returns can't run here.",
+      });
+    }
+    if (statsRes.syncing) {
+      return done("syncing", { message: "Reading reward history… returns resume once it's caught up." });
+    }
+
+    const st = this._readState(key);
+    st.lifetimeRewards = statsRes.totals.rewards;
+
+    // Anchor on first run: only rewards earned from here forward are returned.
+    if (st.anchor === null) {
+      st.anchor = statsRes.totals.rewards;
+      this.state.set(key, st);
+      return done("anchored", {
+        message: `Tracking rewards from now (lifetime so far: ${formatAmount(st.anchor)} KOIN). New block rewards will be returned.`,
+      });
+    }
+
+    const rewardsSinceEnable = cmpSats(st.lifetimeRewards, st.anchor) > 0
+      ? subSats(st.lifetimeRewards, st.anchor)
+      : "0";
+
     let balances;
     try {
       balances = await this.chain.balances(address);
     } catch (e) {
+      this.state.set(key, st);
       return done("rpc-error", { message: String(e.message) });
     }
+    const keep = parseAmount(this.settings.get("keepLiquidKoin", "10"));
+    const availableLiquid = cmpSats(balances.koin, keep) > 0 ? subSats(balances.koin, keep) : "0";
 
-    const st = this._readState(key);
-    if (st.baseline === null) {
-      st.baseline = balances.koin;
-      this.state.set(key, st);
-      return done("baseline-set", {
-        message: `Baseline set at ${formatAmount(balances.koin)} KOIN. New rewards are tracked from here.`,
-      });
-    }
-
-    const plan = computeReturnPlan({
-      baseline: st.baseline,
-      current: balances.koin,
+    const plan = computeReturn({
+      rewardsSinceEnable,
+      returnedSoFar: st.returned,
       pct: cfg.pct,
       minReturnSat: parseAmount(cfg.minReturnKoin),
+      availableLiquidSat: availableLiquid,
     });
+    this.state.set(key, st); // persist refreshed lifetimeRewards
 
-    if (plan.action === "reset") {
-      st.baseline = balances.koin;
-      this.state.set(key, st);
-      return done("baseline-reset", {
-        message: "Balance decreased (manual spend or burn detected) — baseline reset.",
-      });
-    }
-    if (plan.action === "none") return done("no-rewards", { plan });
     if (plan.action === "accumulate") {
       return done("accumulating", {
         plan,
-        message: `Pending rewards ${formatAmount(plan.delta)} KOIN — waiting until the return reaches ${cfg.minReturnKoin} KOIN.`,
+        message: cmpSats(plan.pending, "0") > 0
+          ? `Pending return ${formatAmount(plan.pending)} KOIN — waiting until it reaches ${cfg.minReturnKoin} KOIN.`
+          : "No new rewards to return yet.",
+      });
+    }
+    if (plan.action === "insufficient-liquid") {
+      return done("insufficient-liquid", {
+        plan,
+        message: `Return of ${formatAmount(plan.pending)} KOIN is pending, but not enough liquid KOIN is free above your ${formatAmount(keep)} mana buffer.`,
       });
     }
 
-    // plan.action === "return"
+    // plan.action === "return" — needs a signer.
+    if (!ws.unlocked) {
+      return done("locked", { plan, message: "Unlock the wallet so the pending return can be signed." });
+    }
     if (cfg.mode === "send" && !this.chain.isValidAddress(cfg.toAddress)) {
       return done("config-error", { message: "Return mode is `send` but the target address is invalid." });
     }
+
     let tx;
     try {
       tx =
@@ -184,21 +227,11 @@ class RewardEngine {
       return done("tx-error", { plan, message: String(e.message) });
     }
 
-    // Refresh the balance after the return so the remainder isn't counted again.
-    let newBaseline;
-    try {
-      newBaseline = (await this.chain.balances(address)).koin;
-    } catch {
-      newBaseline = subSats(balances.koin, plan.returnAmount);
-    }
-    st.baseline = newBaseline;
-    st.totals.detected = addSats(st.totals.detected, plan.delta);
-    st.totals.returned = addSats(st.totals.returned, plan.returnAmount);
+    st.returned = addSats(st.returned, plan.returnAmount);
     st.actions.unshift({
       time: Date.now(),
       network: networkId,
       mode: cfg.mode,
-      rewards: plan.delta,
       amount: plan.returnAmount,
       txId: tx.txId,
       confirmed: tx.confirmed,
@@ -208,8 +241,8 @@ class RewardEngine {
 
     const msg =
       cfg.mode === "burn"
-        ? `Returned ${formatAmount(plan.returnAmount)} KOIN → VHP (${cfg.pct}% of ${formatAmount(plan.delta)} KOIN rewards)`
-        : `Sent ${formatAmount(plan.returnAmount)} KOIN to ${cfg.toAddress} (${cfg.pct}% of ${formatAmount(plan.delta)} KOIN rewards)`;
+        ? `Compounded ${formatAmount(plan.returnAmount)} KOIN → VHP (${cfg.pct}% of block rewards)`
+        : `Sent ${formatAmount(plan.returnAmount)} KOIN to ${cfg.toAddress} (${cfg.pct}% of block rewards)`;
     this.onEvent({ type: "rewards", message: msg, txId: tx.txId });
     return done("returned", { plan, tx, message: msg });
   }
@@ -219,16 +252,37 @@ class RewardEngine {
     const ws = this.wallet.status();
     const networkId = this.chain.network().id;
     const st = ws.address ? this._readState(this._stateKey(networkId, ws.address)) : null;
+
+    let derived = null;
+    if (st) {
+      const rewardsSinceEnable =
+        st.anchor == null
+          ? "0"
+          : cmpSats(st.lifetimeRewards, st.anchor) > 0
+            ? subSats(st.lifetimeRewards, st.anchor)
+            : "0";
+      const desired = percentOf(rewardsSinceEnable, cfg.pct);
+      let pending = subSats(desired, st.returned);
+      if (cmpSats(pending, "0") < 0) pending = "0";
+      derived = {
+        anchored: st.anchor != null,
+        lifetimeRewards: st.lifetimeRewards,
+        rewardsSinceEnable,
+        returned: st.returned,
+        pending,
+        actions: st.actions,
+      };
+    }
     return {
       config: cfg,
       running: !!this._timer,
       nextRunAt: this.nextRunAt,
       last: this.last,
-      state: st,
+      derived,
       network: networkId,
       address: ws.address,
     };
   }
 }
 
-module.exports = { RewardEngine, computeReturnPlan, validateRewardsConfig };
+module.exports = { RewardEngine, computeReturn, validateRewardsConfig };

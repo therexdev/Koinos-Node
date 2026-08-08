@@ -613,9 +613,12 @@ function renderBurnView() {
   patchBurnBalances();
   $("#burn-max").addEventListener("click", async () => {
     try {
-      const { maxFormatted } = await call("chain:maxBurn");
+      const { maxFormatted, manaLimited } = await call("chain:maxBurn");
       $("#burn-amount").value = maxFormatted;
       updateBurnEstimate();
+      if (manaLimited) {
+        toast(`Capped to available mana (${maxFormatted} ${sym()}). Mana recharges over ~5 days.`, "info", 6000);
+      }
     } catch (e) {
       toast(e.message, "bad");
     }
@@ -645,9 +648,14 @@ function updateBurnEstimate() {
   try {
     const sats = toSat(v);
     const bal = BigInt(S.balances?.koin ?? "0");
+    const mana = BigInt(S.balances?.mana ?? "0");
+    const burnableMana = mana > ONE ? mana - ONE : 0n; // 1 KOIN cushion for tx rc
     const keep = toSatBig(S.appInfo.settings.keepLiquidKoin);
     if (sats > bal) {
       warn.innerHTML = `<div class="banner bad">Amount exceeds your balance.</div>`;
+    } else if (sats > burnableMana) {
+      // Burning requires mana >= amount on-chain; catch it before the revert.
+      warn.innerHTML = `<div class="banner warn">Not enough mana to burn this much right now (about ${fmtSat(burnableMana.toString(), 4)} ${esc(sym())} available). Burning spends mana, which recharges over ~5 days — burn less or wait.</div>`;
     } else if (bal - sats < keep) {
       warn.innerHTML = `<div class="banner warn">This leaves less than ${esc(S.appInfo.settings.keepLiquidKoin)} ${esc(sym())} liquid. You need liquid ${esc(sym())} for mana to keep transacting.</div>`;
     }
@@ -1142,14 +1150,17 @@ function renderReturnsView() {
         <div class="grid-2">
           <label class="field"><span>Minimum return (${esc(sym())})</span>
             <input id="r-min" type="text" class="mono" value="${esc(cfg.minReturnKoin)}"></label>
-          <label class="field"><span>Check every (minutes)</span>
-            <input id="r-poll" type="number" min="1" value="${cfg.pollMinutes}"></label>
+          <label class="field"><span>Max per return (${esc(sym())})</span>
+            <input id="r-max" type="text" class="mono" placeholder="0 = no limit" value="${esc(cfg.maxReturnKoin === "0" ? "" : cfg.maxReturnKoin ?? "")}"></label>
         </div>
+        <label class="field"><span>Check every (minutes)</span>
+          <input id="r-poll" type="number" min="1" value="${cfg.pollMinutes}"></label>
         <div class="row">
           <button id="r-save" class="btn primary">Save</button>
           <button id="r-now" class="btn">Check now</button>
         </div>
         <p class="hint">Returns are signed locally, so the app must be open with the wallet unlocked. Rewards are read from your node's on-chain block-reward events (the same figure shown on the Dashboard), so deposits and manual burns are never counted.</p>
+        <p class="hint">Compounding or sending KOIN spends <b>mana</b>, which recharges over ~5 days — returns are automatically capped to the mana available now and the rest carries over, so a large pending balance is paid down in chunks. Set a <b>Max per return</b> to cap each run yourself.</p>
       </div>
       <div class="card">
         <h2>📊 Status</h2>
@@ -1183,6 +1194,7 @@ async function onSaveRewards() {
       mode: $("#r-mode").value,
       toAddress: $("#r-to").value.trim(),
       minReturnKoin: $("#r-min").value.trim(),
+      maxReturnKoin: $("#r-max").value.trim() || "0",
       pollMinutes: Number($("#r-poll").value),
     });
     toast("Return settings saved", "good");
@@ -1219,6 +1231,7 @@ const OUTCOME_LABELS = {
   anchored: ["pill accent", "tracking started"],
   accumulating: ["pill accent", "accumulating"],
   "insufficient-liquid": ["pill warn", "low liquid KOIN"],
+  "insufficient-mana": ["pill warn", "waiting for mana"],
   returned: ["pill good", "returned"],
   "tx-error": ["pill bad", "tx failed"],
   "config-error": ["pill bad", "config error"],
@@ -1248,7 +1261,11 @@ function patchReturnsView() {
     <div class="row spread"><span class="muted">Returned</span>
       <span class="mono">${d ? fmtSat(d.returned, 4) : "0"} ${sym()}</span></div>
     <div class="row spread"><span class="muted">Pending return</span>
-      <span class="mono">${d ? fmtSat(d.pending, 4) : "0"} ${sym()}</span></div>`;
+      <span class="mono">${d ? fmtSat(d.pending, 4) : "0"} ${sym()}</span></div>
+    ${r.config.maxReturnKoin && r.config.maxReturnKoin !== "0"
+      ? `<div class="row spread"><span class="muted">Max per return</span>
+      <span class="mono">${esc(r.config.maxReturnKoin)} ${sym()}</span></div>`
+      : ""}`;
 
   const hist = $("#r-history");
   if (hist) {

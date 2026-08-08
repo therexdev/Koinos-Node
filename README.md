@@ -127,7 +127,9 @@ the remaining days-worth of blocks in minutes-to-hours. Mainnet only.
 - When you enable returns, the engine anchors at your current lifetime rewards and tracks everything earned from that point on. Every check interval (default 10 minutes) it targets `rewards-since-enabled × percentage`, and once the not-yet-returned remainder reaches the minimum (default 1 KOIN) it executes:
   - **Compound (default):** burns that KOIN back into VHP via the PoB contract — replenishing the VHP each block consumes and sustaining your hash power.
   - **Send:** transfers that KOIN to an address you choose.
-- Returns are capped by your liquid KOIN above the mana buffer (Settings), so automatic returns never strand you without mana.
+- **Mana-aware pacing.** Burning *and* sending KOIN both consume mana 1:1 on-chain (the token requires `mana ≥ amount`), and mana recharges over ~5 days. Each run is automatically capped to the mana available right now — so a large pending balance is compounded down in chunks over several checks instead of reverting with the chain's opaque `could not burn KOIN`. When mana is the limit, the status shows **waiting for mana** and the remainder simply carries over.
+- Returns are also capped by your liquid KOIN above the mana buffer (Settings, default 10 KOIN), so automatic returns never strand you without mana.
+- **Max per return** (optional, Reward-returns tab) caps how much each run moves — another way to deliberately pace compounding and always leave headroom in the wallet.
 - Everything is signed locally, so **the app must be open and the wallet unlocked** for automatic returns to execute. Pending returns are carried forward until then.
 - The Reward-returns tab shows lifetime rewards (matching the Dashboard), rewards since enabling, amount returned, and the pending return, plus a full return history with transaction links.
 

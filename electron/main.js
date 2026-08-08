@@ -269,10 +269,21 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("chain:maxBurn", async () => {
     const address = wallet.address;
     if (!address) throw new Error("No wallet");
-    const { koin } = await chain.balances(address);
+    const { koin, mana } = await chain.balances(address);
     const keep = parseAmount(settings.get("keepLiquidKoin", "10"));
-    const max = cmpSats(koin, keep) > 0 ? subSats(koin, keep) : "0";
-    return { maxSat: max, maxFormatted: formatAmount(max, { grouping: false }) };
+    // Cap by liquid balance above the mana buffer AND by mana actually available
+    // now — burning requires mana >= amount, so a balance-only Max can suggest an
+    // amount that reverts with "could not burn KOIN".
+    const byBalance = cmpSats(koin, keep) > 0 ? subSats(koin, keep) : "0";
+    const byMana = chain.burnableFromMana(mana);
+    const manaLimited = cmpSats(byMana, byBalance) < 0;
+    const max = manaLimited ? byMana : byBalance;
+    return {
+      maxSat: max,
+      maxFormatted: formatAmount(max, { grouping: false }),
+      manaLimited,
+      manaFormatted: formatAmount(mana),
+    };
   });
 
   // ----- block producer registration -----

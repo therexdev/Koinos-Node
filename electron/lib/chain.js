@@ -1,8 +1,8 @@
 "use strict";
 
 const { Provider, Contract, Transaction, utils } = require("koilib");
-const { NETWORKS, POB_ABI, TOKEN_ABI } = require("./constants");
-const { cmpSats } = require("./format");
+const { NETWORKS, POB_ABI, TOKEN_ABI, BURN_MANA_CUSHION } = require("./constants");
+const { cmpSats, subSats, formatAmount } = require("./format");
 
 const RC_LIMIT_CAP = 1000000000n; // never ask for more than 10 KOIN of mana
 const MIN_MANA = 5000000n;        // refuse to send with < 0.05 KOIN of mana
@@ -218,6 +218,27 @@ class ChainService {
     return out;
   }
 
+  // How much KOIN can actually be burned/sent right now given current mana.
+  // On-chain, both operations require mana >= amount (mana recharges over
+  // ~5 days); we keep a small cushion for the transaction's own resource cost.
+  burnableFromMana(manaSat) {
+    return cmpSats(manaSat, BURN_MANA_CUSHION) > 0 ? subSats(manaSat, BURN_MANA_CUSHION) : "0";
+  }
+
+  // Fail early with a clear, actionable message instead of letting the token /
+  // PoB contract revert with the opaque "could not burn KOIN".
+  _assertMana(amountSat, manaSat, verb) {
+    const burnable = this.burnableFromMana(manaSat);
+    if (cmpSats(amountSat, burnable) > 0) {
+      const doing = verb === "burn" ? "Burning" : "Sending";
+      throw new Error(
+        `Not enough mana to ${verb} ${formatAmount(amountSat)} KOIN — about ${formatAmount(burnable)} KOIN ` +
+          `is available now. ${doing} KOIN spends mana, which recharges over ~5 days; ` +
+          `${verb} a smaller amount or wait for mana to refill.`
+      );
+    }
+  }
+
   // Burn KOIN belonging to `signer` and credit VHP to the same address
   // (or `vhpAddress` when given) via the PoB contract. On KCS-4 KOIN the
   // PoB contract pulls the tokens, so the same transaction first approves
@@ -225,8 +246,9 @@ class ChainService {
   async burn(signer, amountSat, { vhpAddress } = {}) {
     const address = signer.getAddress();
     if (cmpSats(amountSat, "0") <= 0) throw new Error("Burn amount must be positive");
-    const { koin } = await this.balances(address);
+    const { koin, mana } = await this.balances(address);
     if (cmpSats(amountSat, koin) > 0) throw new Error("Insufficient KOIN balance");
+    this._assertMana(amountSat, mana, "burn");
     const provider = this.provider();
     const rcLimit = await this._rcLimit(provider, address);
     const addrs = await this.resolveContracts();
@@ -263,6 +285,8 @@ class ChainService {
     if (cmpSats(amountSat, balances[token]) > 0) {
       throw new Error(`Insufficient ${token.toUpperCase()} balance`);
     }
+    // KOIN transfers also require mana >= amount on-chain (VHP does not).
+    if (token === "koin") this._assertMana(amountSat, balances.mana, "send");
     const provider = this.provider();
     const rcLimit = await this._rcLimit(provider, address);
     const contract = await this._contract(token, { signer, provider });

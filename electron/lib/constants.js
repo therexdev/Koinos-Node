@@ -6,6 +6,13 @@ const TOKEN_ABI = require("./token-abi.json");
 const KOIN_DECIMALS = 8;
 const SATS_PER_KOIN = 100000000n;
 
+// Burning or transferring KOIN consumes mana 1:1 on-chain (the KCS-4 token
+// requires mana >= amount), and mana recharges over ~5 days. Reserve a little
+// mana headroom for the transaction's own resource cost so a burn/send sized
+// right at the mana limit still confirms instead of reverting with the opaque
+// "could not burn KOIN". Expressed in satoshis (1 KOIN).
+const BURN_MANA_CUSHION = "100000000";
+
 // Contract addresses and endpoints verified against chain state and the
 // official documentation (docs.koinos.io). The PoB ABI in pob-abi.json was
 // fetched from the mainnet contract meta store.
@@ -122,14 +129,16 @@ const DEFAULT_SETTINGS = {
     mode: "burn",         // "burn" (compound to VHP) | "send" (to address)
     toAddress: "",
     minReturnKoin: "1",   // don't act below this many KOIN
+    maxReturnKoin: "0",   // cap per run ("0" = no cap); large pending is chunked
     pollMinutes: 10,
   },
-  keepLiquidKoin: "10",   // suggested liquid KOIN to keep for mana
+  keepLiquidKoin: "10",   // liquid KOIN kept as a balance buffer for mana
 };
 
 module.exports = {
   KOIN_DECIMALS,
   SATS_PER_KOIN,
+  BURN_MANA_CUSHION,
   NETWORKS,
   DEFAULT_SETTINGS,
   POB_ABI,

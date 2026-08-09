@@ -439,6 +439,9 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   // default so the Buy button works with zero setup; advanced users can override
   // it with their own endpoint in the Fund tab.
   const DEFAULT_ONRAMP_ENDPOINT = "https://koinos-node.vercel.app/api/session";
+  // Identifies genuine app traffic to the endpoint. Not a true secret (the app
+  // is open-source), but it lets the endpoint reject casual/automated abuse.
+  const ONRAMP_APP_KEY = "kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f";
   const effectiveOnrampEndpoint = () => settings.get("onrampEndpoint", "") || DEFAULT_ONRAMP_ENDPOINT;
 
   handle("fund:status", () => ({
@@ -463,7 +466,7 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
       const timer = setTimeout(() => controller.abort(), 15000);
       const resp = await fetch(endpoint, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-koinoskit-app": ONRAMP_APP_KEY },
         body: JSON.stringify({ address, asset: "ETH", network: "ethereum" }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timer));

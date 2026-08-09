@@ -29,6 +29,7 @@ one function (`api/session.js`) plus a `package.json`.
 3. Under **Environment Variables**, add:
    - `CDP_API_KEY_ID` = your CDP key id
    - `CDP_API_KEY_SECRET` = your CDP key secret
+   - `ONRAMP_SHARED_SECRET` = `kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f` (the app key KoinosKit sends in the `x-koinoskit-app` header; when set, the endpoint rejects callers that don't send it). Leave unset to allow any caller.
 4. **Deploy.** Your endpoint URL will be `https://<your-project>.vercel.app/api/session`.
 
 **Option B — Vercel CLI:**

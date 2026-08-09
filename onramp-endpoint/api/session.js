@@ -6,12 +6,13 @@
 // it takes an ETH address, asks Coinbase for a session token, and returns it.
 // You (an individual) can get a free CDP key; you earn nothing and pay nothing.
 //
-// Deploy on Vercel (Node runtime). Required environment variables:
-//   CDP_API_KEY_ID      — your CDP API key id / name
-//   CDP_API_KEY_SECRET  — your CDP API key secret
-// Optional:
-//   ALLOW_ORIGIN        — CORS origin to allow (default "*"; the desktop app
-//                         calls server-to-server and doesn't need CORS)
+// Deploy on Vercel (Node runtime). Environment variables:
+//   CDP_API_KEY_ID      — your CDP API key id / name            (required)
+//   CDP_API_KEY_SECRET  — your CDP API key secret               (required)
+//   ONRAMP_SHARED_SECRET— shared app key; when set, callers must send it in the
+//                         x-koinoskit-app header (rejects casual abuse of this
+//                         public endpoint). Leave unset to allow all callers.
+//   ALLOW_ORIGIN        — CORS origin to allow (default "*")     (optional)
 //
 // Reference: Coinbase's official demo — https://github.com/coinbase/onramp-demo-application
 //            Create session token — https://docs.cdp.coinbase.com/api-reference/rest-api/onramp-offramp/create-session-token
@@ -21,13 +22,33 @@ import { generateJwt } from "@coinbase/cdp-sdk/auth";
 const HOST = "api.developer.coinbase.com";
 const PATH = "/onramp/v1/token";
 
+// Best-effort in-memory rate limit (per warm serverless instance). Not a hard
+// guarantee across instances, but it blunts abuse loops cheaply.
+const HITS = new Map();
+function rateLimited(ip, limit = 20, windowMs = 60000) {
+  const now = Date.now();
+  const recent = (HITS.get(ip) || []).filter((t) => now - t < windowMs);
+  recent.push(now);
+  HITS.set(ip, recent);
+  return recent.length > limit;
+}
+
 export default async function handler(req, res) {
   const origin = process.env.ALLOW_ORIGIN || "*";
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "content-type");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, x-koinoskit-app");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+
+  // Verify the caller is our app (only enforced when a shared secret is set).
+  const sharedSecret = process.env.ONRAMP_SHARED_SECRET;
+  if (sharedSecret && req.headers["x-koinoskit-app"] !== sharedSecret) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "unknown";
+  if (rateLimited(ip)) return res.status(429).json({ error: "Too many requests, try again shortly" });
 
   const keyId = process.env.CDP_API_KEY_ID;
   const keySecret = process.env.CDP_API_KEY_SECRET;

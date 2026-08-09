@@ -45,6 +45,7 @@ const CHANNELS = new Set([
   "fund:bridgeStatus",
   "fund:bridgeStart",
   "fund:bridgeQuote",
+  "fund:bridgeMax",
   "fund:bridgeAdvance",
   "fund:bridgeReset",
   "util:copy",

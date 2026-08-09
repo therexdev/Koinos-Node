@@ -1315,15 +1315,20 @@ function patchBridge() {
     banner = `<div class="banner bad">Bridge stopped: ${esc(job.error || "unknown error")}${job.ethTxHash ? `<br><span class="small">Your ETH deposit (${esc(job.ethTxHash.slice(0, 12))}…) is safe — Retry resumes from where it left off.</span>` : ""}</div>`;
   }
   el.innerHTML = `${banner}
-    <label class="field" style="margin-top:10px"><span>Amount to bridge (ETH · max 0.05)</span>
-      <input id="fund-bridge-amt" type="number" min="0" max="0.05" step="0.001" class="mono" placeholder="0.01" style="max-width:180px"></label>
-    <div id="fund-bridge-quote" class="hint" style="min-height:18px"></div>
+    <div class="field" style="margin-top:10px"><span>Amount to bridge (ETH · max 0.05)</span>
+      <div class="row" style="gap:8px;align-items:center">
+        <input id="fund-bridge-amt" type="number" min="0" max="0.05" step="0.001" class="mono" placeholder="0.01" style="max-width:180px">
+        <button id="fund-bridge-max" class="btn ghost" style="padding:6px 12px" title="Bridge your whole ETH balance minus gas">Max</button>
+      </div>
+    </div>
+    <div id="fund-bridge-quote" class="hint" style="min-height:18px;margin-top:6px"></div>
     <div class="row" style="margin-top:8px">
       <button id="fund-bridge-start" class="btn primary">Bridge &amp; swap to KOIN</button>
       ${job && job.status === "error" ? '<button id="fund-bridge-retry" class="btn">Retry</button>' : ""}
       ${job ? '<button id="fund-bridge-reset" class="btn ghost">Reset</button>' : ""}
     </div>`;
   $("#fund-bridge-amt").addEventListener("input", debounceBridgeQuote);
+  $("#fund-bridge-max").addEventListener("click", onBridgeMax);
   $("#fund-bridge-start").addEventListener("click", onBridgeStart);
   const retry = document.getElementById("fund-bridge-retry");
   if (retry) retry.addEventListener("click", async () => { await call("fund:bridgeAdvance").catch(() => {}); refreshBridge(); });
@@ -1356,6 +1361,30 @@ async function doBridgeQuote() {
     }
   } catch (e) {
     q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  }
+}
+
+async function onBridgeMax() {
+  const btn = document.getElementById("fund-bridge-max");
+  const amt = document.getElementById("fund-bridge-amt");
+  if (!btn || !amt) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const r = await call("fund:bridgeMax");
+    const max = Math.floor(Number(r.maxEth) * 1e6) / 1e6; // floor to 6 dp so it never exceeds balance − gas
+    if (!(max > 0)) {
+      toast("Not enough ETH (after gas) to bridge", "bad", 7000);
+      return;
+    }
+    amt.value = String(max);
+    doBridgeQuote();
+  } catch (e) {
+    toast(e.message, "bad", 8000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
 }
 

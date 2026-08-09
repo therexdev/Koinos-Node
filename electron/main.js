@@ -19,7 +19,7 @@ const FORCED_PLATFORM = process.env.KND_FORCE_PLATFORM || null;
 const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 const { weiToEth } = require("./lib/eth");
 const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrator");
-const { quoteDeposit } = require("./lib/eth-bridge");
+const { quoteDeposit, maxBridgeable } = require("./lib/eth-bridge");
 const { quoteSwap } = require("./lib/koindx");
 
 // Shared Coinbase Onramp endpoint + app-identity key (see onramp-endpoint/). At
@@ -546,7 +546,17 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("fund:bridgeReset", () => bridge.reset());
   handle("fund:bridgeAdvance", () => bridge.advance());
   handle("fund:bridgeStart", ({ amountEth, slippageBps } = {}) => bridge.start({ amountEth, slippageBps }));
-  handle("fund:bridgeQuote", async ({ amountEth } = {}) => {
+  handle("fund:bridgeMax", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return maxBridgeable({
+      fromAddress: address,
+      koinosRecipient: wallet.address,
+      network: settings.get("network", "mainnet"),
+      capEth: MAX_BRIDGE_ETH,
+    });
+  });
+  handle("fund:bridgeQuote", async ({ amountEth, slippageBps } = {}) => {
     const address = wallet.ethAddress;
     if (!address) throw new Error("Create or unlock your wallet first.");
     const network = settings.get("network", "mainnet");

@@ -97,6 +97,39 @@ async function quoteDeposit({ fromAddress, amountEth, koinosRecipient, network =
   };
 }
 
+// The most a user can bridge right now: ETH balance minus a gas reserve (with a
+// 30% buffer for gas-price movement), capped at the safety limit. Read-only.
+async function maxBridgeable({ fromAddress, koinosRecipient, network = "mainnet", provider, capEth = DEFAULT_MAX_ETH } = {}) {
+  const cfg = BRIDGE[network];
+  if (!cfg || !cfg.ethBridge) throw new Error(`Bridge not configured for ${network}`);
+  const p = provider || (await makeProvider());
+  const bridge = new ethers.Contract(cfg.ethBridge, BRIDGE_ABI, p);
+  const balance = await p.getBalance(fromAddress);
+
+  // Gas for wrapAndTransferETH is ~constant regardless of value; estimate with a
+  // nominal 1 wei, falling back to a safe default if the address is empty.
+  let gasLimit;
+  try {
+    gasLimit = await bridge.wrapAndTransferETH.estimateGas(0, "", koinosRecipient || fromAddress, "", cfg.toChain, { value: 1n, from: fromAddress });
+  } catch {
+    gasLimit = 150000n;
+  }
+  const fee = await p.getFeeData();
+  const perGas = fee.maxFeePerGas ?? fee.gasPrice ?? 0n;
+  const gasReserve = (gasLimit * perGas * 13n) / 10n; // +30% headroom
+  let maxWei = balance > gasReserve ? balance - gasReserve : 0n;
+  const capWei = ethers.parseEther(String(capEth));
+  if (maxWei > capWei) maxWei = capWei;
+
+  return {
+    maxWei: maxWei.toString(),
+    maxEth: ethers.formatEther(maxWei),
+    gasReserveEth: ethers.formatEther(gasReserve),
+    balanceEth: ethers.formatEther(balance),
+    capped: maxWei === capWei,
+  };
+}
+
 // Sign + broadcast the deposit. REAL ETH MOVES HERE. Validation runs before any
 // network use so bad input never reaches the chain.
 async function sendDeposit({ ethPrivHex, amountEth, koinosRecipient, network = "mainnet", provider, maxEth = DEFAULT_MAX_ETH } = {}) {
@@ -146,6 +179,7 @@ async function requestNewSignatures({ ethPrivHex, ethTxHash, network = "mainnet"
 
 module.exports = {
   quoteDeposit,
+  maxBridgeable,
   sendDeposit,
   requestNewSignatures,
   makeProvider,

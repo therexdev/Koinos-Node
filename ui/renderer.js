@@ -1239,8 +1239,20 @@ function patchFundView() {
           <label class="field"><span>Amount (USD, optional)</span>
             <input id="fund-usd" type="number" min="0" step="1" class="mono" placeholder="e.g. 50" style="max-width:160px"></label>
           <button id="fund-buy" class="btn primary big">Buy ETH with Coinbase ↗</button>
-          <p class="hint">Opens Coinbase Pay in your browser with this address pre-filled.</p>`;
+          <p class="hint">Opens Coinbase Pay with this address pre-filled (once your Coinbase Onramp is approved).</p>
+          <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+            <div class="muted small" style="margin-bottom:6px">Or buy ETH anywhere — no setup — and send it to your address above:</div>
+            <div class="row" style="gap:8px;flex-wrap:wrap">
+              <button class="btn ghost" data-buy="https://www.moonpay.com/buy/eth">MoonPay ↗</button>
+              <button class="btn ghost" data-buy="https://ramp.network/buy?swapAsset=ETH">Ramp ↗</button>
+              <button class="btn ghost" data-buy="https://www.coinbase.com/how-to-buy/ethereum">Coinbase ↗</button>
+              <button class="btn ghost" data-buy="https://www.kraken.com/learn/buy-ethereum-eth">Kraken ↗</button>
+            </div>
+          </div>`;
         $("#fund-buy").addEventListener("click", onBuyEth);
+        $$("[data-buy]", buyWrap).forEach((b) =>
+          b.addEventListener("click", () => call("util:openExternal", { url: b.dataset.buy }).catch(() => {}))
+        );
       }
     }
   }

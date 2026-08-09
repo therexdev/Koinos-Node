@@ -106,7 +106,7 @@ evidence in that folder's `FINDINGS.md` and `production-test/`.
 - **Phase 3 — Control plane + billing:** fleet orchestration over **shared cores**
   (drop in one producer per subscriber — the cheap unit validated above), monitor,
   upgrade, subscription billing (the monthly card charge, metered per producer),
-  isolation, dashboards.
+  isolation, dashboards. **Design: [`cloud-control-plane.md`](./cloud-control-plane.md).**
 - **Phase 4 — Native app** (wrap/rebuild once proven), push notifications.
 
 ## Decisions needed before Phase 3 (not before Phase 1)

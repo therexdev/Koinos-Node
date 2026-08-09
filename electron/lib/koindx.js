@@ -8,7 +8,10 @@
 // get_pair is the literal "koin", not its contract address. vETH stays base58.
 
 const { Contract, Transaction } = require("koilib");
-const { PeripheryAbi, CoreAbi } = require("@koindx/v2-sdk");
+// ABIs vendored from @koindx/v2-sdk so the swap works in a packaged/asar build
+// without depending on the SDK's module resolution at runtime.
+const PeripheryAbi = require("./abi/koindx-periphery-abi.json");
+const CoreAbi = require("./abi/koindx-core-abi.json");
 const { BRIDGE } = require("./bridge-constants");
 const { TOKEN_ABI } = require("./constants");
 

@@ -1343,10 +1343,17 @@ async function doBridgeQuote() {
   q.textContent = "Getting quote…";
   try {
     const r = await call("fund:bridgeQuote", { amountEth: amt.value });
-    const koin = r.swap && r.swap.amountOut ? fmtKoin(r.swap.amountOut) : "—";
-    const min = r.swap && r.swap.amountOutMin ? fmtKoin(r.swap.amountOutMin) : "—";
     const gas = Number(r.deposit.gasCostEth || 0).toFixed(5);
-    q.innerHTML = `Deposit ${esc(r.deposit.amountEth)} ETH (gas ~${esc(gas)} ETH) → ~<b>${esc(koin)} KOIN</b> (min ${esc(min)} after slippage).${r.deposit.sufficient ? "" : ' <span style="color:var(--bad)">Not enough ETH for amount + gas.</span>'}`;
+    const short = r.deposit.sufficient ? "" : ' <span style="color:var(--bad)">Not enough ETH for amount + gas.</span>';
+    if (r.swap && r.swap.amountOut) {
+      const koin = fmtKoin(r.swap.amountOut);
+      const min = fmtKoin(r.swap.amountOutMin);
+      q.innerHTML = `Deposit ${esc(r.deposit.amountEth)} ETH (gas ~${esc(gas)} ETH) → ~<b>${esc(koin)} KOIN</b> (min ${esc(min)} after slippage).${short}`;
+    } else {
+      const why = r.swap && r.swap.error ? `: ${esc(r.swap.error)}` : "";
+      const veth = r.deposit.vethSats ? fmtKoin(r.deposit.vethSats) : "?";
+      q.innerHTML = `Deposit ${esc(r.deposit.amountEth)} ETH (gas ~${esc(gas)} ETH) → ${esc(veth)} vETH. <span style="color:var(--bad)">KOIN quote unavailable${why}</span>.${short}`;
+    }
   } catch (e) {
     q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
   }

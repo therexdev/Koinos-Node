@@ -85,6 +85,21 @@ function deriveEthAddress(koinosPrivHex) {
   return privateKeyToAddress(deriveEthPrivateKey(koinosPrivHex));
 }
 
+// Format a wei amount (hex string "0x…", decimal string, or BigInt) as an ETH
+// decimal string with up to maxDecimals places, trailing zeros trimmed.
+function weiToEth(wei, maxDecimals = 6) {
+  let v;
+  if (typeof wei === "bigint") v = wei;
+  else v = BigInt(String(wei == null ? 0 : wei).trim() || "0");
+  const WEI = 10n ** 18n;
+  const whole = v / WEI;
+  const frac = v % WEI;
+  if (maxDecimals <= 0) return whole.toString();
+  const scale = 10n ** BigInt(maxDecimals);
+  const fracStr = ((frac * scale) / WEI).toString().padStart(maxDecimals, "0").replace(/0+$/, "");
+  return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
+}
+
 module.exports = {
   SECP256K1_N,
   toChecksumAddress,
@@ -92,4 +107,5 @@ module.exports = {
   privateKeyToAddress,
   deriveEthPrivateKey,
   deriveEthAddress,
+  weiToEth,
 };

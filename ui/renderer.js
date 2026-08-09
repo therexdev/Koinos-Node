@@ -1201,32 +1201,64 @@ async function refreshFund() {
 function patchFundView() {
   const addrWrap = $("#fund-addr-wrap");
   if (addrWrap) {
-    if (FUND.ethAddress) {
-      addrWrap.innerHTML = `
-        <div class="mono" style="word-break:break-all;font-size:15px;padding:10px;background:var(--card-2);border:1px solid var(--border);border-radius:8px">${esc(FUND.ethAddress)}</div>
-        <div class="row" style="margin-top:8px"><button id="fund-copy" class="btn">Copy address</button></div>`;
-      $("#fund-copy").addEventListener("click", async () => {
-        await call("util:copy", { text: FUND.ethAddress });
-        toast("Address copied", "good");
-      });
-    } else {
-      addrWrap.innerHTML = `<div class="banner warn">Create or unlock your wallet first — your ETH address is derived from it.</div>`;
+    const key = FUND.ethAddress || "";
+    if (addrWrap.dataset.addr !== key) {
+      addrWrap.dataset.addr = key;
+      if (FUND.ethAddress) {
+        addrWrap.innerHTML = `
+          <div class="mono" style="word-break:break-all;font-size:15px;padding:10px;background:var(--card-2);border:1px solid var(--border);border-radius:8px">${esc(FUND.ethAddress)}</div>
+          <div class="row" style="margin-top:8px;align-items:center;gap:10px">
+            <button id="fund-copy" class="btn">Copy address</button>
+            <span id="fund-bal" class="muted">Balance: checking…</span>
+            <button id="fund-bal-refresh" class="btn ghost" title="Refresh balance" style="padding:4px 10px">↻</button>
+          </div>`;
+        $("#fund-copy").addEventListener("click", async () => {
+          await call("util:copy", { text: FUND.ethAddress });
+          toast("Address copied", "good");
+        });
+        $("#fund-bal-refresh").addEventListener("click", loadEthBalance);
+      } else {
+        addrWrap.innerHTML = `<div class="banner warn">Create or unlock your wallet first — your ETH address is derived from it.</div>`;
+      }
     }
+    if (FUND.ethAddress) loadEthBalance();
   }
   const buyWrap = $("#fund-buy-wrap");
   if (buyWrap) {
-    if (!FUND.ethAddress) {
-      buyWrap.innerHTML = `<p class="muted">Unlock your wallet to enable buying.</p>`;
-    } else if (!FUND.onrampConfigured) {
-      buyWrap.innerHTML = `<p class="muted">Add your Coinbase Onramp endpoint below to turn on the in-app Buy button. Until then, buy ETH on any exchange and withdraw to the address on the left.</p>`;
-    } else {
-      buyWrap.innerHTML = `
-        <label class="field"><span>Amount (USD, optional)</span>
-          <input id="fund-usd" type="number" min="0" step="1" class="mono" placeholder="e.g. 50" style="max-width:160px"></label>
-        <button id="fund-buy" class="btn primary big">Buy ETH with Coinbase ↗</button>
-        <p class="hint">Opens Coinbase Pay in your browser with this address pre-filled.</p>`;
-      $("#fund-buy").addEventListener("click", onBuyEth);
+    const state = !FUND.ethAddress ? "locked" : FUND.onrampConfigured ? "buy" : "need-endpoint";
+    if (buyWrap.dataset.state !== state) {
+      buyWrap.dataset.state = state;
+      if (state === "locked") {
+        buyWrap.innerHTML = `<p class="muted">Unlock your wallet to enable buying.</p>`;
+      } else if (state === "need-endpoint") {
+        buyWrap.innerHTML = `<p class="muted">Add your Coinbase Onramp endpoint below to turn on the in-app Buy button. Until then, buy ETH on any exchange and withdraw to the address on the left.</p>`;
+      } else {
+        buyWrap.innerHTML = `
+          <label class="field"><span>Amount (USD, optional)</span>
+            <input id="fund-usd" type="number" min="0" step="1" class="mono" placeholder="e.g. 50" style="max-width:160px"></label>
+          <button id="fund-buy" class="btn primary big">Buy ETH with Coinbase ↗</button>
+          <p class="hint">Opens Coinbase Pay in your browser with this address pre-filled.</p>`;
+        $("#fund-buy").addEventListener("click", onBuyEth);
+      }
     }
+  }
+}
+
+let _balBusy = false;
+async function loadEthBalance() {
+  const el = document.getElementById("fund-bal");
+  if (!el || _balBusy) return;
+  _balBusy = true;
+  try {
+    const b = await call("fund:ethBalance");
+    const positive = Number(b.eth) > 0;
+    el.textContent = `Balance: ${b.eth} ETH`;
+    el.classList.toggle("good", positive);
+    el.classList.toggle("muted", !positive);
+  } catch {
+    el.textContent = "Balance: unavailable";
+  } finally {
+    _balBusy = false;
   }
 }
 

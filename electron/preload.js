@@ -41,6 +41,7 @@ const CHANNELS = new Set([
   "rewards:runNow",
   "fund:status",
   "fund:buyUrl",
+  "fund:ethBalance",
   "util:copy",
   "util:openExternal",
   "util:openPath",

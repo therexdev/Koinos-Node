@@ -17,6 +17,7 @@ const { ProducerStats } = require("./lib/producer-stats");
 // platforms during development/screenshots. Never set in production.
 const FORCED_PLATFORM = process.env.KND_FORCE_PLATFORM || null;
 const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
+const { weiToEth } = require("./lib/eth");
 
 let win = null;
 
@@ -484,6 +485,39 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     u.searchParams.set("fiatCurrency", "USD");
     if (amountUsd && Number(amountUsd) > 0) u.searchParams.set("presetFiatAmount", String(Number(amountUsd)));
     return { url: u.toString() };
+  });
+
+  // Read-only ETH balance of the wallet's funding address, via public RPCs
+  // (tried in order). Lets the user confirm funds arrived before bridging.
+  const ETH_RPCS = [
+    "https://ethereum-rpc.publicnode.com",
+    "https://eth.llamarpc.com",
+    "https://cloudflare-eth.com",
+    "https://rpc.ankr.com/eth",
+  ];
+  handle("fund:ethBalance", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    let lastErr;
+    for (const rpc of ETH_RPCS) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        const resp = await fetch(rpc, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [address, "latest"] }),
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timer));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error.message || "RPC error");
+        return { address, wei: data.result, eth: weiToEth(data.result) };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw new Error(`Couldn't fetch ETH balance: ${String(lastErr?.message || lastErr)}`);
   });
 
   // ----- utilities -----

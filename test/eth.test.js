@@ -8,6 +8,7 @@ const {
   privateKeyToAddress,
   deriveEthPrivateKey,
   deriveEthAddress,
+  weiToEth,
 } = require("../electron/lib/eth");
 
 test("privateKeyToAddress matches canonical Ethereum test vectors", () => {
@@ -62,4 +63,15 @@ test("deriveEthAddress: different Koinos keys give different ETH addresses", () 
 
 test("deriveEthAddress ignores 0x prefix / matches padded form", () => {
   assert.equal(deriveEthAddress("0x" + "ab".repeat(32)), deriveEthAddress("ab".repeat(32)));
+});
+
+test("weiToEth formats hex/decimal/bigint wei correctly", () => {
+  assert.equal(weiToEth("0x0"), "0");
+  assert.equal(weiToEth(0n), "0");
+  assert.equal(weiToEth("1500000000000000000"), "1.5"); // 1.5 ETH
+  assert.equal(weiToEth("0x2c68af0bb140000"), "0.2"); // 0.2 ETH in hex
+  assert.equal(weiToEth("12300000000000000"), "0.0123"); // trims trailing zeros
+  assert.equal(weiToEth("1000000000000000000"), "1"); // whole number, no decimals
+  assert.equal(weiToEth(1n), "0"); // 1 wei rounds to 0 at 6 decimals
+  assert.equal(weiToEth("1000000000000", 9), "0.000001"); // custom precision
 });

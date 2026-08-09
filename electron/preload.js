@@ -39,6 +39,8 @@ const CHANNELS = new Set([
   "rewards:status",
   "rewards:configure",
   "rewards:runNow",
+  "fund:status",
+  "fund:buyUrl",
   "util:copy",
   "util:openExternal",
   "util:openPath",

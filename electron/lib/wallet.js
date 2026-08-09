@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { Signer, utils } = require("koilib");
 const { encryptKeystore, decryptKeystore } = require("./keystore");
+const { deriveEthAddress, deriveEthPrivateKey } = require("./eth");
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -15,6 +16,14 @@ class WalletService {
     this.walletDir = walletDir;
     this.keystorePath = path.join(walletDir, "wallet.json");
     this._signer = null;
+    this._ethAddress = null;
+  }
+
+  // The Ethereum address (for the Fund Node flow) is derived from the Koinos
+  // key, so it's cached publicly in the keystore for display while locked and
+  // recomputed on unlock. The ETH private key itself is only derived on demand.
+  _koinosPrivHex(signer) {
+    return String(signer.getPrivateKey("hex")).replace(/^0x/i, "").padStart(64, "0");
   }
 
   readKeystore() {
@@ -35,8 +44,19 @@ class WalletService {
       exists: !!ks,
       unlocked: !!this._signer,
       address: this._signer ? this._signer.getAddress() : ks?.address ?? null,
+      ethAddress: this._ethAddress ?? ks?.ethAddress ?? null,
       createdAt: ks?.createdAt ?? null,
     };
+  }
+
+  get ethAddress() {
+    return this._ethAddress ?? this.readKeystore()?.ethAddress ?? null;
+  }
+
+  // Derives the Ethereum private key on demand (Phase 2: Vortex bridge signing).
+  ethPrivateKey() {
+    if (!this._signer) throw new Error("Wallet is locked");
+    return deriveEthPrivateKey(this._koinosPrivHex(this._signer));
   }
 
   get signer() {
@@ -55,15 +75,24 @@ class WalletService {
   }
 
   _persist(signer, password) {
+    const ethAddress = deriveEthAddress(this._koinosPrivHex(signer));
     const keystore = encryptKeystore({
       privateKeyHex: signer.getPrivateKey("hex"),
       address: signer.getAddress(),
       password,
     });
     keystore.compressed = signer.compressed !== false;
+    keystore.ethAddress = ethAddress; // public; for display while locked
     fs.mkdirSync(this.walletDir, { recursive: true });
     const tmp = `${this.keystorePath}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(keystore, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, this.keystorePath);
+    this._ethAddress = ethAddress;
+  }
+
+  _writeKeystore(ks) {
+    const tmp = `${this.keystorePath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(ks, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.keystorePath);
   }
 
@@ -83,7 +112,7 @@ class WalletService {
     this._persist(signer, password);
     this._signer = signer;
     // WIF is returned once so the user can write down a backup.
-    return { address: signer.getAddress(), wif: signer.getPrivateKey("wif") };
+    return { address: signer.getAddress(), ethAddress: this._ethAddress, wif: signer.getPrivateKey("wif") };
   }
 
   importWif({ wif, password }) {
@@ -102,7 +131,7 @@ class WalletService {
     }
     this._persist(signer, password);
     this._signer = signer;
-    return { address: signer.getAddress() };
+    return { address: signer.getAddress(), ethAddress: this._ethAddress };
   }
 
   _signerFromKeystore(password) {
@@ -118,7 +147,19 @@ class WalletService {
 
   unlock(password) {
     this._signer = this._signerFromKeystore(password);
-    return { address: this._signer.getAddress() };
+    this._ethAddress = deriveEthAddress(this._koinosPrivHex(this._signer));
+    // Backfill ethAddress into keystores created before the Fund feature so the
+    // address also shows while locked.
+    const ks = this.readKeystore();
+    if (ks && ks.ethAddress !== this._ethAddress) {
+      ks.ethAddress = this._ethAddress;
+      try {
+        this._writeKeystore(ks);
+      } catch {
+        /* non-fatal: it will be recomputed on next unlock */
+      }
+    }
+    return { address: this._signer.getAddress(), ethAddress: this._ethAddress };
   }
 
   lock() {
@@ -140,6 +181,7 @@ class WalletService {
     this._signerFromKeystore(password);
     fs.rmSync(this.keystorePath, { force: true });
     this._signer = null;
+    this._ethAddress = null;
     return { removed: true };
   }
 }

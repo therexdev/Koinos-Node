@@ -1143,6 +1143,122 @@ function patchNodeView() {
   }
 }
 
+// ---------- fund view ----------
+
+let FUND = { ethAddress: null, onrampEndpoint: "", onrampConfigured: false };
+
+function renderFundView() {
+  const root = $("#view-fund");
+  root.innerHTML = `
+    <h1>Fund node</h1>
+    <p class="lead">Buy ETH into an address the app generates for you. A later beta will bridge it to Koinos and swap to KOIN automatically — for now the address and on-ramp are ready to test.</p>
+    <div class="grid-2">
+      <div class="card">
+        <h2>① Your Ethereum funding address</h2>
+        <div id="fund-addr-wrap"><p class="muted">Loading…</p></div>
+        <div class="banner warn" style="margin-top:12px">Send only <b>ETH on Ethereum Mainnet</b> here. Funds on other networks or other tokens may be lost.</div>
+        <p class="hint">Derived from your Koinos wallet key — your existing private-key backup recovers this ETH address too, so there's no second thing to back up.</p>
+      </div>
+      <div class="card">
+        <h2>② Buy ETH with Coinbase</h2>
+        <div id="fund-buy-wrap"><p class="muted">Loading…</p></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>⚙️ Coinbase Onramp endpoint</h2>
+      <p class="hint">Coinbase's on-ramp needs a tiny serverless function (holding your free CDP key) to authorize purchases — the secret never ships inside the app. Deploy the one in the setup guide, then paste its URL here. Until then, just send ETH to the address on the left from any exchange or wallet.</p>
+      <label class="field"><span>Endpoint URL (https)</span>
+        <input id="fund-endpoint" type="text" class="mono" placeholder="https://your-worker.example.workers.dev" value="${esc(FUND.onrampEndpoint || "")}"></label>
+      <div class="row">
+        <button id="fund-endpoint-save" class="btn primary">Save</button>
+        <button class="btn ghost" data-ext="https://github.com/therexdev/Koinos-Node/blob/HEAD/docs/coinbase-onramp.md">Setup guide ↗</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row spread"><h2 style="margin:0">🌉 Bridge &amp; swap to KOIN</h2><span class="pill accent">Phase 2</span></div>
+      <p class="muted small" style="margin-top:8px">Next up: the app bridges your ETH to Koinos (Vortex) and swaps it to KOIN (KoinDX) in a couple of clicks. Until that ships you can complete the loop manually at the official Vortex bridge and KoinDX.</p>
+    </div>`;
+
+  $("#fund-endpoint-save").addEventListener("click", onSaveOnrampEndpoint);
+  $$("[data-ext]", root).forEach((a) =>
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      call("util:openExternal", { url: a.dataset.ext }).catch(() => {});
+    })
+  );
+  refreshFund();
+}
+
+async function refreshFund() {
+  try {
+    FUND = await call("fund:status");
+  } catch {
+    /* keep last */
+  }
+  patchFundView();
+}
+
+function patchFundView() {
+  const addrWrap = $("#fund-addr-wrap");
+  if (addrWrap) {
+    if (FUND.ethAddress) {
+      addrWrap.innerHTML = `
+        <div class="mono" style="word-break:break-all;font-size:15px;padding:10px;background:var(--card-2);border:1px solid var(--border);border-radius:8px">${esc(FUND.ethAddress)}</div>
+        <div class="row" style="margin-top:8px"><button id="fund-copy" class="btn">Copy address</button></div>`;
+      $("#fund-copy").addEventListener("click", async () => {
+        await call("util:copy", { text: FUND.ethAddress });
+        toast("Address copied", "good");
+      });
+    } else {
+      addrWrap.innerHTML = `<div class="banner warn">Create or unlock your wallet first — your ETH address is derived from it.</div>`;
+    }
+  }
+  const buyWrap = $("#fund-buy-wrap");
+  if (buyWrap) {
+    if (!FUND.ethAddress) {
+      buyWrap.innerHTML = `<p class="muted">Unlock your wallet to enable buying.</p>`;
+    } else if (!FUND.onrampConfigured) {
+      buyWrap.innerHTML = `<p class="muted">Add your Coinbase Onramp endpoint below to turn on the in-app Buy button. Until then, buy ETH on any exchange and withdraw to the address on the left.</p>`;
+    } else {
+      buyWrap.innerHTML = `
+        <label class="field"><span>Amount (USD, optional)</span>
+          <input id="fund-usd" type="number" min="0" step="1" class="mono" placeholder="e.g. 50" style="max-width:160px"></label>
+        <button id="fund-buy" class="btn primary big">Buy ETH with Coinbase ↗</button>
+        <p class="hint">Opens Coinbase Pay in your browser with this address pre-filled.</p>`;
+      $("#fund-buy").addEventListener("click", onBuyEth);
+    }
+  }
+}
+
+async function onBuyEth() {
+  const btn = $("#fund-buy");
+  busyButton(btn, true, "Preparing…");
+  try {
+    const usd = Number($("#fund-usd")?.value) || undefined;
+    const { url } = await call("fund:buyUrl", { amountUsd: usd });
+    await call("util:openExternal", { url });
+    toast("Opened Coinbase Pay in your browser", "good");
+  } catch (e) {
+    toast(e.message, "bad", 8000);
+  } finally {
+    busyButton(btn, false);
+  }
+}
+
+async function onSaveOnrampEndpoint() {
+  const btn = $("#fund-endpoint-save");
+  busyButton(btn, true, "Saving…");
+  try {
+    await call("settings:update", { onrampEndpoint: $("#fund-endpoint").value.trim() });
+    toast("Endpoint saved", "good");
+    await refreshFund();
+  } catch (e) {
+    toast(e.message, "bad");
+  } finally {
+    busyButton(btn, false);
+  }
+}
+
 // ---------- returns view ----------
 
 function renderReturnsView() {
@@ -1442,6 +1558,7 @@ function switchView(view) {
   if (view === "dashboard") refreshDashboard();
   if (view === "node") refreshNode();
   if (view === "returns") refreshRewards();
+  if (view === "fund") refreshFund();
   if (view === "wallet" || view === "burn") refreshBalances();
 }
 
@@ -1452,6 +1569,7 @@ async function heartbeat() {
     if (S.view === "wallet" || S.view === "burn") await refreshBalances();
     if (S.view === "node") await refreshNode();
     if (S.view === "returns") await refreshRewards();
+    if (S.view === "fund") await refreshFund();
   } catch { /* keep ticking */ }
 }
 
@@ -1475,6 +1593,7 @@ async function init() {
   renderDashboardView();
   renderNodeView();
   renderReturnsView();
+  renderFundView();
   renderSettingsView();
   refreshDashboard();
   refreshRewards();

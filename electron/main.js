@@ -54,7 +54,7 @@ function createWindow() {
     win.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
         try {
-          for (const view of ["dashboard", "wallet", "burn", "node", "returns", "settings"]) {
+          for (const view of ["dashboard", "wallet", "fund", "burn", "node", "returns", "settings"]) {
             await win.webContents.executeJavaScript(
               `document.querySelector('[data-view="${view}"]').click()`
             );
@@ -201,7 +201,7 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     minPasswordLength: MIN_PASSWORD_LENGTH,
   }));
 
-  handle("settings:update", ({ network, customRpc, keepLiquidKoin }) => {
+  handle("settings:update", ({ network, customRpc, keepLiquidKoin, onrampEndpoint }) => {
     if (network !== undefined) {
       if (!NETWORKS[network]) throw new Error(`Unknown network: ${network}`);
       settings.set("network", network);
@@ -219,6 +219,12 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     if (keepLiquidKoin !== undefined) {
       parseAmount(keepLiquidKoin);
       settings.set("keepLiquidKoin", String(keepLiquidKoin));
+    }
+    if (onrampEndpoint !== undefined) {
+      const u = String(onrampEndpoint).trim();
+      // Must be https — this endpoint holds the Coinbase secret key.
+      if (u && !/^https:\/\/\S+$/.test(u)) throw new Error("Onramp endpoint must be an https:// URL");
+      settings.set("onrampEndpoint", u);
     }
     return settings.all();
   });
@@ -427,6 +433,48 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("rewards:status", () => rewards.status());
   handle("rewards:configure", (patch) => rewards.configure(patch));
   handle("rewards:runNow", () => rewards.tick("manual"));
+
+  // ----- fund node (Ethereum on-ramp — Phase 1) -----
+  handle("fund:status", () => ({
+    ethAddress: wallet.ethAddress,
+    onrampEndpoint: settings.get("onrampEndpoint", ""),
+    onrampConfigured: !!settings.get("onrampEndpoint", ""),
+  }));
+
+  // Asks the user's own Coinbase Onramp endpoint (a small serverless function
+  // holding their CDP secret) to mint a session token for the wallet's ETH
+  // address, then builds the hosted Coinbase Pay URL. Post-2025 Onramp requires
+  // this server-minted session token — the secret never lives in the app.
+  handle("fund:buyUrl", async ({ amountUsd } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first to get a funding address.");
+    const endpoint = settings.get("onrampEndpoint", "");
+    if (!endpoint) throw new Error("Add your Coinbase Onramp endpoint URL in the Fund tab first.");
+    let token;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address, asset: "ETH", network: "ethereum" }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+      if (!resp.ok) throw new Error(`endpoint returned HTTP ${resp.status}`);
+      const data = await resp.json();
+      token = data.token || data.sessionToken;
+    } catch (e) {
+      throw new Error(`Couldn't reach your Onramp endpoint: ${String(e.message || e)}`);
+    }
+    if (!token) throw new Error("Your Onramp endpoint didn't return a session token.");
+    const u = new URL("https://pay.coinbase.com/buy/select-asset");
+    u.searchParams.set("sessionToken", token);
+    u.searchParams.set("defaultAsset", "ETH");
+    u.searchParams.set("defaultNetwork", "ethereum");
+    u.searchParams.set("fiatCurrency", "USD");
+    if (amountUsd && Number(amountUsd) > 0) u.searchParams.set("presetFiatAmount", String(Number(amountUsd)));
+    return { url: u.toString() };
+  });
 
   // ----- utilities -----
   handle("util:copy", ({ text }) => {

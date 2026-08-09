@@ -15,15 +15,21 @@ function freshService() {
 
 test("create, lock, unlock roundtrip", () => {
   const w = freshService();
-  assert.deepEqual(w.status(), { exists: false, unlocked: false, address: null, createdAt: null });
+  assert.deepEqual(w.status(), { exists: false, unlocked: false, address: null, ethAddress: null, createdAt: null });
 
-  const { address, wif } = w.create({ password: "pw12345678" });
+  const { address, ethAddress, wif } = w.create({ password: "pw12345678" });
   assert.equal(Signer.fromWif(wif).getAddress(), address);
   assert.equal(w.status().unlocked, true);
+  assert.match(ethAddress, /^0x[0-9a-fA-F]{40}$/); // derived ETH address
 
   w.lock();
   assert.equal(w.status().unlocked, false);
   assert.equal(w.status().address, address); // address visible while locked
+  assert.equal(w.status().ethAddress, ethAddress); // ETH address too (cached)
+
+  // Same Koinos key must always derive the same ETH address.
+  w.unlock("pw12345678");
+  assert.equal(w.status().ethAddress, ethAddress);
 
   assert.throws(() => w.unlock("wrong password"), /Incorrect password/);
   w.unlock("pw12345678");

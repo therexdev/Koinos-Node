@@ -45,9 +45,10 @@ function computeSetupPlan({ platform, wsl = {}, docker = {} } = {}) {
       steps.push(step(
         "wsl",
         "Restart Windows to finish enabling WSL 2",
-        "WSL was installed. A restart is required before Docker can use it.",
+        "WSL was installed. Restart Windows, then reopen the app — setup continues automatically. If you already restarted and this still shows, click “Already restarted”.",
         "reboot",
-        { channel: "setup:restart", label: "Restart Windows" }
+        { channel: "setup:restart", label: "Restart Windows" },
+        { channel: "setup:markWslReady", label: "Already restarted" }
       ));
     } else {
       steps.push(step(
@@ -124,8 +125,8 @@ function computeSetupPlan({ platform, wsl = {}, docker = {} } = {}) {
   return finalize(steps);
 }
 
-function step(key, title, detail, status, action = null) {
-  return { key, title, detail, status, action };
+function step(key, title, detail, status, action = null, altAction = null) {
+  return { key, title, detail, status, action, altAction };
 }
 
 function finalize(steps) {

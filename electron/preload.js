@@ -33,6 +33,7 @@ const CHANNELS = new Set([
   "setup:installDocker",
   "setup:cancelInstallDocker",
   "setup:startDocker",
+  "setup:markWslReady",
   "setup:openDockerDocs",
   "dashboard:summary",
   "rewards:status",

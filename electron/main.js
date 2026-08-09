@@ -347,6 +347,7 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("setup:installDocker", () => setup.installDocker());
   handle("setup:cancelInstallDocker", () => setup.cancelInstallDocker());
   handle("setup:startDocker", () => setup.startDocker());
+  handle("setup:markWslReady", () => setup.markWslReady());
   handle("setup:openDockerDocs", () => {
     shell.openExternal(setup.dockerDocsUrl());
     return true;

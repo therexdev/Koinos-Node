@@ -899,12 +899,15 @@ function renderSetupCard(n) {
       const btn = s.action
         ? `<button class="btn ${s.status === "reboot" ? "danger" : "primary"}" data-setup-action="${esc(s.action.channel.split(":")[1])}">${esc(s.action.label)}</button>`
         : "";
+      const altBtn = s.altAction
+        ? `<button class="btn ghost" data-setup-action="${esc(s.altAction.channel.split(":")[1])}">${esc(s.altAction.label)}</button>`
+        : "";
       const cls = s.status === "done" ? "muted" : "";
       return `<div class="setup-step ${s.status}">
         <div class="setup-ico">${icon}</div>
         <div class="setup-body"><div class="setup-title ${cls}">${esc(s.title)}</div>
           <div class="setup-detail">${esc(s.detail)}</div></div>
-        <div class="setup-act">${btn}</div>
+        <div class="setup-act">${btn}${altBtn}</div>
       </div>`;
     })
     .join("");
@@ -949,6 +952,22 @@ async function onSetupClick(e) {
       await call("setup:installWsl");
       toast("Follow the Windows window to install WSL, then restart when it finishes", "good", 8000);
     } catch (err) { toast(err.message, "bad", 8000); }
+    refreshNode();
+    return;
+  }
+
+  if (action === "markWslReady") {
+    busyDelegate(el, "Checking…");
+    try {
+      const r = await call("setup:markWslReady");
+      toast(
+        r?.overridden
+          ? "Couldn't auto-detect WSL, but continuing as requested. If Docker install fails, restart Windows and try again."
+          : "WSL detected — continuing to Docker.",
+        r?.overridden ? "warn" : "good",
+        7000
+      );
+    } catch (err) { toast(err.message, "bad"); }
     refreshNode();
     return;
   }

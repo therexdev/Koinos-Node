@@ -6,6 +6,28 @@ const { execFile, spawn } = require("child_process");
 const { httpDownload } = require("./download");
 const { computeSetupPlan, dockerAsset, DOCKER_DOCS, WSL_INSTALL_ARGS } = require("./setup-plan");
 
+// Windows console tools like wsl.exe emit UTF-16LE. Decoding those bytes as
+// UTF-8 (Node's default) leaves a NUL between every character — so a naive
+// /wsl/.test(stdout) silently fails on "W\0S\0L\0…", which made post-reboot WSL
+// detection always fail and the guided setup loop forever on "Restart Windows".
+// Detect UTF-16LE by its NUL density, decode accordingly, and drop stray NULs
+// and a leading BOM (compared by code point so no control chars live in source).
+function decodeWinText(buf) {
+  if (!buf || !buf.length) return "";
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf));
+  let nul = 0;
+  const n = Math.min(b.length, 512);
+  for (let i = 0; i < n; i++) if (b[i] === 0) nul++;
+  const text = nul > n / 4 ? b.toString("utf16le") : b.toString("utf8");
+  let out = "";
+  for (const ch of text) {
+    const c = ch.charCodeAt(0);
+    if (c === 0 || c === 0xfeff) continue; // NUL or BOM
+    out += ch;
+  }
+  return out;
+}
+
 // Automates the Windows/macOS prerequisites (WSL 2 + Docker Desktop) so the
 // user never has to open a terminal or hunt for a download. Detection is
 // best-effort; every action degrades to a clear message if the platform
@@ -21,19 +43,32 @@ class SetupService {
     this._abort = null;
   }
 
+  // Captures stdout/stderr as raw Buffers (so callers can decode UTF-16LE from
+  // Windows tools) while still exposing UTF-8 strings for the common case.
   _exec(bin, args, opts = {}) {
     return new Promise((resolve) => {
       execFile(
         bin,
         args,
-        { timeout: opts.timeout ?? 15000, windowsHide: true, env: process.env },
-        (error, stdout, stderr) =>
+        {
+          timeout: opts.timeout ?? 15000,
+          windowsHide: true,
+          env: process.env,
+          encoding: "buffer",
+          maxBuffer: 4 * 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          const outBuf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || "");
+          const errBuf = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr || "");
           resolve({
             ok: !error,
             code: error?.code,
-            stdout: String(stdout || ""),
-            stderr: String(stderr || ""),
-          })
+            stdout: outBuf.toString("utf8"),
+            stderr: errBuf.toString("utf8"),
+            stdoutRaw: outBuf,
+            stderrRaw: errBuf,
+          });
+        }
       );
     });
   }
@@ -42,14 +77,35 @@ class SetupService {
 
   async detectWsl() {
     if (this.platform !== "win32") return { installed: true, rebootPending: false };
-    // `wsl --version` only succeeds on the modern WSL 2 (Store) build; the old
-    // inbox stub prints usage text and exits non-zero.
-    const r = await this._exec("wsl.exe", ["--version"], { timeout: 12000 });
-    const installed = r.ok && /wsl/i.test(r.stdout);
-    const rebootPending = !installed && !!this.state?.get("setup.wslRebootPending", false);
-    if (installed && this.state?.get("setup.wslRebootPending", false)) {
-      this.state.set("setup.wslRebootPending", false);
+
+    // Manual escape hatch: the user asserted WSL is set up. Used when
+    // auto-detection can't confirm it on an unusual build.
+    if (this.state?.get("setup.wslOverride", false)) {
+      if (this.state?.get("setup.wslRebootPending", false)) {
+        this.state.set("setup.wslRebootPending", false);
+      }
+      return { installed: true, rebootPending: false, overridden: true };
     }
+
+    const rebootWasPending = !!this.state?.get("setup.wslRebootPending", false);
+
+    // `wsl --version` succeeds on modern WSL 2; decode UTF-16LE before matching.
+    const ver = await this._exec("wsl.exe", ["--version"], { timeout: 12000 });
+    let installed = ver.ok && /wsl/i.test(decodeWinText(ver.stdoutRaw));
+
+    // Fallback: `wsl --status` also confirms WSL is present (covers builds where
+    // --version output or locale differs). This is the signal that flips the
+    // reboot step to done once the machine comes back up.
+    if (!installed) {
+      const st = await this._exec("wsl.exe", ["--status"], { timeout: 12000 });
+      const txt = decodeWinText(st.stdoutRaw);
+      if (st.ok && /(default version|wsl|linux kernel|kernel version)/i.test(txt)) {
+        installed = true;
+      }
+    }
+
+    const rebootPending = !installed && rebootWasPending;
+    if (installed && rebootWasPending) this.state?.set("setup.wslRebootPending", false);
     return { installed, rebootPending };
   }
 
@@ -116,12 +172,27 @@ class SetupService {
       // Non-zero here almost always means the UAC prompt was declined.
       throw new Error("Windows permission was declined, so WSL wasn't installed. Click Enable WSL and choose Yes.");
     }
+    // A fresh install supersedes any earlier manual override.
+    this.state?.set("setup.wslOverride", false);
     this.state?.set("setup.wslRebootPending", true);
     this.onEvent({
       type: "setup",
       message: "Installing WSL 2 — follow the Windows window, then restart your PC when it finishes.",
     });
     return { started: true, rebootExpected: true };
+  }
+
+  // User-driven escape hatch for the reboot step: re-detect first (the normal
+  // post-reboot case now that UTF-16LE output is handled), and only fall back to
+  // a forced override when detection genuinely can't confirm WSL on this build.
+  async markWslReady() {
+    if (this.platform !== "win32") return { installed: true, overridden: false };
+    this.state?.set("setup.wslRebootPending", false);
+    const wsl = await this.detectWsl();
+    if (wsl.installed) return { installed: true, overridden: false };
+    this.state?.set("setup.wslOverride", true);
+    this.onEvent({ type: "setup", message: "Marked WSL as ready — continuing to Docker." });
+    return { installed: true, overridden: true };
   }
 
   async restart() {
@@ -230,4 +301,4 @@ class SetupService {
   }
 }
 
-module.exports = { SetupService };
+module.exports = { SetupService, decodeWinText };

@@ -37,6 +37,25 @@ test("create, lock, unlock roundtrip", () => {
   assert.equal(w.signer.getAddress(), address);
 });
 
+test("unlock backfills a derived ETH address for pre-Fund keystores", () => {
+  const w = freshService();
+  const { ethAddress } = w.create({ password: "pw12345678" });
+  w.lock();
+
+  // Simulate a wallet created before the Fund feature: strip ethAddress from disk.
+  const ks = JSON.parse(fs.readFileSync(w.keystorePath, "utf8"));
+  delete ks.ethAddress;
+  fs.writeFileSync(w.keystorePath, JSON.stringify(ks));
+  const w2 = new WalletService(path.dirname(w.keystorePath));
+  assert.equal(w2.status().ethAddress, null); // absent while locked
+
+  // Unlocking re-derives it (deterministically) and writes it back.
+  const r = w2.unlock("pw12345678");
+  assert.equal(r.ethAddress, ethAddress);
+  assert.equal(w2.status().ethAddress, ethAddress);
+  assert.equal(JSON.parse(fs.readFileSync(w.keystorePath, "utf8")).ethAddress, ethAddress);
+});
+
 test("import WIF preserves the address", () => {
   const seedSigner = Signer.fromSeed("wallet test seed");
   const wif = seedSigner.getPrivateKey("wif");

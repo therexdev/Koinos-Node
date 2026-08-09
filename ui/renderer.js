@@ -1227,33 +1227,41 @@ function patchFundView() {
   }
   const buyWrap = $("#fund-buy-wrap");
   if (buyWrap) {
-    const state = !FUND.ethAddress ? "locked" : FUND.onrampConfigured ? "buy" : "need-endpoint";
+    // A blank onrampEndpoint means the built-in (default) Coinbase endpoint,
+    // which is pending Coinbase approval — so the in-app Coinbase button only
+    // shows when the user has set their own (approved) endpoint. Everyone gets
+    // the keyless buy links + the receive address.
+    const state = !FUND.ethAddress ? "locked" : FUND.onrampEndpoint ? "buy-custom" : "buy-default";
+    const keylessLinks = `
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+        <div class="muted small" style="margin-bottom:6px">Buy ETH anywhere — no account with us, no setup — and send it to your address above:</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" data-buy="https://www.moonpay.com/buy/eth">MoonPay ↗</button>
+          <button class="btn ghost" data-buy="https://ramp.network/buy?swapAsset=ETH">Ramp ↗</button>
+          <button class="btn ghost" data-buy="https://www.coinbase.com/how-to-buy/ethereum">Coinbase ↗</button>
+          <button class="btn ghost" data-buy="https://www.kraken.com/learn/buy-ethereum-eth">Kraken ↗</button>
+        </div>
+      </div>`;
     if (buyWrap.dataset.state !== state) {
       buyWrap.dataset.state = state;
       if (state === "locked") {
         buyWrap.innerHTML = `<p class="muted">Unlock your wallet to enable buying.</p>`;
-      } else if (state === "need-endpoint") {
-        buyWrap.innerHTML = `<p class="muted">Add your Coinbase Onramp endpoint below to turn on the in-app Buy button. Until then, buy ETH on any exchange and withdraw to the address on the left.</p>`;
-      } else {
+      } else if (state === "buy-custom") {
         buyWrap.innerHTML = `
           <label class="field"><span>Amount (USD, optional)</span>
             <input id="fund-usd" type="number" min="0" step="1" class="mono" placeholder="e.g. 50" style="max-width:160px"></label>
           <button id="fund-buy" class="btn primary big">Buy ETH with Coinbase ↗</button>
-          <p class="hint">Opens Coinbase Pay with this address pre-filled (once your Coinbase Onramp is approved).</p>
-          <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-            <div class="muted small" style="margin-bottom:6px">Or buy ETH anywhere — no setup — and send it to your address above:</div>
-            <div class="row" style="gap:8px;flex-wrap:wrap">
-              <button class="btn ghost" data-buy="https://www.moonpay.com/buy/eth">MoonPay ↗</button>
-              <button class="btn ghost" data-buy="https://ramp.network/buy?swapAsset=ETH">Ramp ↗</button>
-              <button class="btn ghost" data-buy="https://www.coinbase.com/how-to-buy/ethereum">Coinbase ↗</button>
-              <button class="btn ghost" data-buy="https://www.kraken.com/learn/buy-ethereum-eth">Kraken ↗</button>
-            </div>
-          </div>`;
+          <p class="hint">Opens Coinbase Pay with this address pre-filled (your custom endpoint).</p>
+          ${keylessLinks}`;
         $("#fund-buy").addEventListener("click", onBuyEth);
-        $$("[data-buy]", buyWrap).forEach((b) =>
-          b.addEventListener("click", () => call("util:openExternal", { url: b.dataset.buy }).catch(() => {}))
-        );
+      } else {
+        buyWrap.innerHTML = `
+          <div class="banner info">Coinbase in-app purchase is <b>currently unavailable</b> (pending Coinbase approval). Use a Buy link below, or add your own approved Coinbase endpoint in the settings above.</div>
+          ${keylessLinks}`;
       }
+      $$("[data-buy]", buyWrap).forEach((b) =>
+        b.addEventListener("click", () => call("util:openExternal", { url: b.dataset.buy }).catch(() => {}))
+      );
     }
   }
 }

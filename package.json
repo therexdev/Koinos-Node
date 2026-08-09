@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
+    "ethers": "^6.17.0",
     "koilib": "^9.2.0"
   },
   "devDependencies": {

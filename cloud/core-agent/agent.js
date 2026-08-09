@@ -274,6 +274,18 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
 
+  // CORS so the browser front-end (served from another origin) can call the API.
+  // The x-agent-token header is still required — the wildcard origin only allows
+  // the request to be made, not to succeed without the token.
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.setHeader("Access-Control-Allow-Headers", "x-agent-token, content-type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Vary", "Origin");
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    return res.end();
+  }
+
   if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true });
 
   if (TOKEN && req.headers["x-agent-token"] !== TOKEN) return send(res, 401, { error: "unauthorized" });

@@ -41,6 +41,7 @@ class SetupService {
     this.onEvent = onEvent || (() => {});
     this._op = null;
     this._abort = null;
+    this._cliPath = null; // memoized docker CLI location
   }
 
   // Captures stdout/stderr as raw Buffers (so callers can decode UTF-16LE from
@@ -109,13 +110,56 @@ class SetupService {
     return { installed, rebootPending };
   }
 
+  // Full paths to the docker CLI. A freshly installed Docker Desktop is NOT on
+  // the running app's PATH (Windows snapshots env at launch), so relying on the
+  // bare `docker` command makes detection fail until the app restarts — we probe
+  // the known install locations directly instead.
+  _dockerCliCandidates() {
+    if (this.platform === "win32") {
+      const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+      const pf64 = process.env["ProgramW6432"] || pf;
+      const local = process.env["LOCALAPPDATA"] || "";
+      const rel = "Docker\\Docker\\resources\\bin\\docker.exe";
+      const list = [path.join(pf, rel), path.join(pf64, rel)];
+      if (local) list.push(path.join(local, rel));
+      return list;
+    }
+    if (this.platform === "darwin") {
+      return [
+        "/usr/local/bin/docker",
+        "/opt/homebrew/bin/docker",
+        "/Applications/Docker.app/Contents/Resources/bin/docker",
+      ];
+    }
+    return ["/usr/bin/docker", "/usr/local/bin/docker"];
+  }
+
+  // Resolve a working docker CLI: PATH first, then known full paths that exist on
+  // disk. Memoized, and re-validated each call so an uninstall is noticed.
+  async _dockerCli() {
+    const works = async (bin) => (await this._exec(bin, ["--version"], { timeout: 12000 })).ok;
+    if (this._cliPath && (await works(this._cliPath))) return this._cliPath;
+    if (await works("docker")) return (this._cliPath = "docker");
+    for (const p of this._dockerCliCandidates()) {
+      try {
+        if (fs.existsSync(p) && (await works(p))) return (this._cliPath = p);
+      } catch {
+        /* ignore */
+      }
+    }
+    this._cliPath = null;
+    return null;
+  }
+
   _dockerAppInstalled() {
     try {
       if (this.platform === "win32") {
-        const candidates = [
-          path.join(process.env["ProgramFiles"] || "C:/Program Files", "Docker/Docker/Docker Desktop.exe"),
-          path.join(process.env["ProgramW6432"] || "C:/Program Files", "Docker/Docker/Docker Desktop.exe"),
-        ];
+        const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+        const pf64 = process.env["ProgramW6432"] || pf;
+        const local = process.env["LOCALAPPDATA"] || "";
+        const rel = "Docker\\Docker\\Docker Desktop.exe";
+        const candidates = [path.join(pf, rel), path.join(pf64, rel)];
+        if (local) candidates.push(path.join(local, "Programs", rel)); // per-user install
         return candidates.find((p) => fs.existsSync(p)) || null;
       }
       if (this.platform === "darwin") {
@@ -128,16 +172,24 @@ class SetupService {
   }
 
   async detectDocker() {
-    const version = await this._exec("docker", ["--version"], { timeout: 12000 });
-    const cliInstalled = version.ok;
+    const cli = await this._dockerCli();
     const appPath = this._dockerAppInstalled();
-    const installed = cliInstalled || !!appPath;
+    // "Installed" if we found a working CLI, the Docker Desktop app bundle, or a
+    // docker binary on disk (covers the stale-PATH window right after install).
+    const cliOnDisk = this._dockerCliCandidates().some((p) => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    });
+    const installed = !!cli || !!appPath || cliOnDisk;
     let running = false;
-    if (installed) {
-      const info = await this._exec("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 15000 });
+    if (cli) {
+      const info = await this._exec(cli, ["info", "--format", "{{.ServerVersion}}"], { timeout: 15000 });
       running = info.ok && info.stdout.trim().length > 0;
     }
-    return { installed, running, appPath };
+    return { installed, running, appPath, cli: cli || null };
   }
 
   async status() {

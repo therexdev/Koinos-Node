@@ -9,12 +9,16 @@
 //      sponsor does not fund arbitrary computation.
 // (Signature recovery, co-signing and broadcast happen in the handler.)
 
-// Vortex Koinos bridge + KoinDX addresses/entry-points that may be sponsored.
-// entry_point 1296908025 = bridge.complete_transfer (verified on-chain). KoinDX
-// approve+swap entry-points are added in Phase 2.5.
+// Vortex Koinos bridge + KoinDX addresses/entry-points that may be sponsored,
+// all verified on-chain:
+//   bridge.complete_transfer   1296908025
+//   vETH token approve         1960973952 (to let the KoinDX router pull vETH)
+//   KoinDX router swap_tokens_in 2335548678
 const ALLOWED_OPS = {
   mainnet: {
-    "1aqHtNRDkiAZeFtuM8fRFuurcje6eHqF8": [1296908025], // bridge complete_transfer
+    "1aqHtNRDkiAZeFtuM8fRFuurcje6eHqF8": [1296908025], // Vortex bridge: complete_transfer
+    "1Tf1QKv3gVYLjq34yURSHw5ErTYbFjqTG": [1960973952], // vETH token: approve
+    "17e1q6Fh5RgnuA8K7v4KvXXH4k9qHgsT5s": [2335548678], // KoinDX router: swap_tokens_in
   },
 };
 

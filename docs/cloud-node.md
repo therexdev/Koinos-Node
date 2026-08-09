@@ -69,9 +69,49 @@ whole difference from a pool (which holds your stake, votes for you, takes a cut
   monitor, upgrade), subscription billing, isolation, dashboards.
 - **Phase 4 — Native app** (wrap/rebuild once proven), push notifications.
 
+## Cost lever: shared core + per-user producer (validated)
+
+To make an *individual* node cheap without turning into a pool, a Koinos node
+splits cleanly into an expensive shared half and a trivial per-user half:
+
+- **Shared core (one per host):** `chain` + `mempool` + `block_store` + `p2p` +
+  `amqp`. Holds the chain state (~40 GB, growing) and does all the syncing — the
+  real cost driver, now **O(1) instead of O(N)**.
+- **Per-user producer:** one `koinos-block-producer` with its **own** `private.key`
+  and its **own** `--producer` address, pointed at the shared core. Still fully
+  self-sovereign — own key, own vote, own 100% rewards; the core is just read-only
+  chain data. **This is not a pool** (Fogata shares funds + producer; this shares
+  only infrastructure).
+
+A spike in [`../cloud/experiments/shared-core`](../cloud/experiments/shared-core)
+confirmed this both from the Koinos source (block producers declare **exclusive**
+`amq.gen-*` event queues → fanout, never a shared/competing queue) and empirically
+(two producers on one core, distinct keys/addresses, distinct queues, no collision).
+Measured marginal cost of an added user: **~3 MB RAM + a 28 KB key file** — so one
+modest host serves dozens of independent producers and the per-user price falls well
+under **$1/mo**. Full write-up + evidence in that folder's `FINDINGS.md`.
+
+## Roadmap
+
+- **Phase 1 — Node unit (de-risk the core):** a provisioning script + agent that
+  turns a bare Ubuntu VM into a running, quick-synced node that generates a
+  block-signing key and reports status. The replicable unit the whole service is
+  built on. Testable on any single VM. ✅
+- **Phase 2 — PWA:** browser-adapted wallet + chain (reuse `koilib`), node
+  status/monitor, and the `register_public_key` flow. Works against a Phase-1 node
+  by RPC.
+- **Phase 3 — Control plane + billing:** fleet orchestration over **shared cores**
+  (drop in one producer per subscriber — the cheap unit validated above), monitor,
+  upgrade, subscription billing (the monthly card charge, metered per producer),
+  isolation, dashboards.
+- **Phase 4 — Native app** (wrap/rebuild once proven), push notifications.
+
 ## Decisions needed before Phase 3 (not before Phase 1)
 
 - Cloud provider (Hetzner = cheapest, DigitalOcean = easy API, AWS/GCP = scale).
-- Node density (1 VM/user vs container density) and the resulting price point.
+- Density: **shared core + per-user producer** (validated above) vs. 1 VM/user
+  (simpler, but ~10× the per-user cost). Shared core is the path to a viable price.
 - Billing (card via Stripe, or crypto/KOIN subscription) and monthly price.
+- Producer redundancy: how many shared cores to run so one core's downtime doesn't
+  stall a whole cohort (liveness only — keys/funds are never at risk).
 - PWA domain/branding.

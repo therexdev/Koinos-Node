@@ -1,11 +1,18 @@
 # Phase 3 — Control plane + billing (architecture)
 
 The backend that turns the validated **shared core + per-user producer** unit into
-a paid service: it provisions one producer per subscriber onto a shared core,
-meters + bills per producer (Stripe), exposes the API the PWA calls, and **never
-holds the user's main key**. This is the design doc; it builds directly on
-[`cloud-node.md`](./cloud-node.md), the [Phase 1 provisioner](../cloud/provision.sh),
-and the [shared-core findings](../cloud/experiments/shared-core/FINDINGS.md).
+a service: it provisions one producer per subscriber onto a shared core, exposes
+the API the PWA calls, and **never holds the user's main key**. This is the design
+doc; it builds directly on [`cloud-node.md`](./cloud-node.md), the [Phase 1
+provisioner](../cloud/provision.sh), and the [shared-core
+findings](../cloud/experiments/shared-core/FINDINGS.md).
+
+> **Status.** The **core-agent** — the piece that actually provisions/stops/starts/
+> deletes producers on a shared core — is **built and validated live**
+> ([`../cloud/core-agent`](../cloud/core-agent)). **Payments are deferred: the
+> service runs free while we test.** When we add billing it will be **PayPal**
+> (not Stripe); the payment-driven parts below describe that future state, and the
+> free tier simply skips the payment gate (a producer is provisioned on request).
 
 ## What's already de-risked (so Phase 3 doesn't re-litigate it)
 
@@ -32,11 +39,11 @@ flowchart TB
   subgraph CP["Control plane (our backend)"]
     API["API server (PWA-facing)"]
     ORCH["Orchestrator / reconciler"]
-    BILL["Stripe webhook handler"]
+    BILL["Payment webhook handler (future)"]
     DB[("Postgres")]
   end
 
-  S["Stripe (subscriptions)"]
+  S["PayPal — future (free tier skips this)"]
 
   subgraph Fleet["Fleet of core hosts"]
     subgraph CoreA["Core host A"]
@@ -54,10 +61,11 @@ flowchart TB
 
   KN[("Koinos network")]
 
-  W -->|"subscribe / start / status"| API
-  API --> S
-  S -->|"webhook: active / failed / canceled"| BILL
-  BILL --> ORCH
+  W -->|"start / status (free tier: no payment)"| API
+  API -.->|"future"| S
+  S -.->|"webhook (future)"| BILL
+  BILL -.-> ORCH
+  API -->|"provision on request (free)"| ORCH
   API --> DB
   ORCH --> DB
   ORCH -->|"provision / deprovision"| CA1
@@ -87,15 +95,16 @@ flowchart TB
    `list`, and report per-producer `status`/`pubkey`. It talks to the local Docker
    engine. **It only ever reads the producer's public key** — the private key stays
    in the producer's basedir on the host.
-4. **Stripe webhook handler** — verifies signatures, maps subscription lifecycle
-   events to desired-state changes in Postgres (which the orchestrator then acts on).
+4. **Payment webhook handler (future — PayPal)** — verifies signatures, maps
+   subscription lifecycle events to desired-state changes in Postgres (which the
+   orchestrator then acts on). Absent in the free tier.
 5. **Postgres** — the source of truth for users, subscriptions, producers, cores.
 
 ### Data model (Postgres)
 
 ```
-users        (id, email, stripe_customer_id, created_at)
-subscriptions(id, user_id, stripe_subscription_id, status, current_period_end)
+users        (id, email, billing_customer_id, created_at)      -- billing_* null in free tier (PayPal later)
+subscriptions(id, user_id, billing_subscription_id, status, current_period_end)
 cores        (id, host, region, capacity, chain_status, image_tags, created_at)
 producers    (id, user_id, core_id, producer_address, container_id,
               public_key, status, created_at)   -- status: provisioning|running|stopped|error
@@ -110,14 +119,16 @@ reads to register. No private keys in this database — ever.
 sequenceDiagram
   participant U as User (PWA · main key)
   participant CP as Control plane
-  participant St as Stripe
+  participant Pay as PayPal (future)
   participant CA as core-agent
   participant Pr as Producer (signing key)
   participant KN as Koinos network
 
   U->>CP: Start my node
-  CP->>St: Create Checkout subscription
-  St-->>CP: subscription active (webhook)
+  opt future (billing) — free tier skips this
+    CP->>Pay: Create subscription
+    Pay-->>CP: subscription active (webhook)
+  end
   CP->>CA: provision(producerAddress)
   CA->>Pr: start container (self-generates signing key)
   Pr-->>CA: public.key
@@ -130,8 +141,8 @@ sequenceDiagram
     CP->>CA: GET status
     CA-->>CP: sync / producing / blocks-behind
   end
-  U->>CP: Cancel (or payment fails)
-  CP->>CA: deprovision (stop + wipe key)
+  U->>CP: Stop / cancel
+  CP->>CA: stop (grace, keep key) — or delete (wipe key)
 ```
 
 The user can re-register a new key or unregister from the phone at any time — the
@@ -149,22 +160,28 @@ So the worst-case breach is a **liveness/grief** event on individual producers,
 recoverable by key rotation — never a loss of funds or governance control. Signing
 keys are encrypted at rest on the host and readable only by that producer.
 
-## Billing design (Stripe)
+## Billing design (free now → PayPal later)
 
-- **Model:** flat monthly per producer (one Stripe subscription item = one running
-  node). Predictable, matches the cost shape (always-on infra dominates; usage is
-  negligible). Usage-based metering is unnecessary complexity for v1.
-- **Provisioning is webhook-driven** (Stripe is the source of truth for "paid"):
-  - `customer.subscription.created/updated` → **active** → orchestrator provisions.
-  - `invoice.payment_failed` → **past_due** → grace period (e.g. 3–5 days) → stop.
-  - `customer.subscription.deleted` → **canceled** → deprovision.
-- **Grace + reversibility:** a stopped producer's registration stays valid on-chain;
-  re-subscribing re-provisions and the user's already-registered key resumes
-  producing (or we hand back a fresh key to re-register).
-- **Self-funding (future, not v1):** the node earns KOIN and the
-  [reward-return engine](../electron/lib) already exists — a later option can auto-
-  convert a slice of rewards (via the KoinDX path we built) to offset the card
-  charge for users above break-even. v1 is card-only to keep custody out of scope.
+- **v1 — free while testing.** No payment gate. "Start my node" provisions a
+  producer immediately; "stop" pauses (grace) or deletes it. The core-agent already
+  implements the full lifecycle; the control plane just calls it on request. This
+  lets us prove the product end-to-end (fund → node → register → produce → monitor)
+  before touching money.
+- **Future — PayPal (not Stripe).** Flat monthly per producer (one subscription =
+  one running node); predictable and matches the cost shape (always-on infra
+  dominates, usage is negligible). Provisioning becomes webhook-driven off PayPal
+  subscription events:
+  - subscription **activated** → orchestrator provisions (or resumes) the producer.
+  - payment **failed** → **grace** period → `stop` (keep the key, node reclaimable).
+  - subscription **cancelled** → `stop` through grace, then `delete`.
+- **Grace + reversibility is already in the agent:** `stop` keeps the signing key,
+  so a resumed subscription brings the **same registered key** back online (proven
+  in the core-agent test) — no re-registration needed. `delete` wipes the key for a
+  clean exit.
+- **Self-funding (later option):** the node earns KOIN and the
+  [reward-return engine](../electron/lib) already exists — a future option can
+  auto-convert a slice of rewards (via the KoinDX path we built) to offset the
+  monthly charge for users above break-even. Kept out of v1 to avoid custody.
 
 ## Fleet operations
 
@@ -189,7 +206,7 @@ keys are encrypted at rest on the host and readable only by that producer.
 
 - core-agent ↔ control-plane: mTLS or signed tokens; the control port is not public.
 - API authz: a user can only read/act on **their own** producer.
-- Stripe webhook signature verification; idempotent event handling.
+- PayPal webhook signature verification; idempotent event handling (future).
 - Signing keys encrypted at rest; least-privilege on core hosts.
 - Rate limiting + audit logging on provision/deprovision.
 
@@ -202,14 +219,17 @@ keys are encrypted at rest on the host and readable only by that producer.
 
 ## Rollout (Phase 3 sub-phases)
 
-- **3.1 — Prove the money→node loop.** One core host (Phase 1 provisioner) + Stripe
-  Checkout + webhook handler that provisions/deprovisions a producer via the
-  core-agent. Manual placement. Goal: a real card charge spins up a real producing
-  node, and canceling stops it.
+- **3.1 — Prove the request→node loop (free).**
+  - ✅ **core-agent built + validated** ([`../cloud/core-agent`](../cloud/core-agent)):
+    provision / stop / start / delete a producer on a shared core, token-auth,
+    restart-safe. Ran live against a real core.
+  - Next: a minimal control-plane API in front (accounts + "Start my node" →
+    calls the core-agent), no payment. Manual/single-core placement.
 - **3.2 — Orchestrate the fleet.** Reconciler + multi-core + capacity-based
   placement + auto-provision new cores + per-producer status API for the PWA.
-- **3.3 — Operate it.** Monitoring/alerting, rolling upgrades, producer migration,
-  admin dashboard, self-funding option.
+- **3.3 — Operate + monetize.** Monitoring/alerting, rolling upgrades, producer
+  migration, admin dashboard; add **PayPal** billing (webhook → provision/grace/
+  cancel) and the self-funding option.
 
 ## Open decisions (business, not blockers)
 

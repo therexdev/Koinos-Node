@@ -1151,7 +1151,7 @@ function renderFundView() {
   const root = $("#view-fund");
   root.innerHTML = `
     <h1>Fund node</h1>
-    <p class="lead">Buy ETH into an address the app generates for you. A later beta will bridge it to Koinos and swap to KOIN automatically — for now the address and on-ramp are ready to test.</p>
+    <p class="lead">Buy ETH into an address the app generates for you, then bridge it to Koinos and swap to KOIN — all in-app. Mana for the Koinos steps is sponsored, so you don't need any KOIN to start.</p>
     <div class="grid-2">
       <div class="card">
         <h2>① Your Ethereum funding address</h2>
@@ -1175,8 +1175,9 @@ function renderFundView() {
       </div>
     </div>
     <div class="card">
-      <div class="row spread"><h2 style="margin:0">🌉 Bridge &amp; swap to KOIN</h2><span class="pill accent">Phase 2</span></div>
-      <p class="muted small" style="margin-top:8px">Next up: the app bridges your ETH to Koinos (Vortex) and swaps it to KOIN (KoinDX) in a couple of clicks. Until that ships you can complete the loop manually at the official Vortex bridge and KoinDX.</p>
+      <div class="row spread"><h2 style="margin:0">🌉 Bridge &amp; swap to KOIN</h2><span class="pill warn">beta</span></div>
+      <div class="banner warn" style="margin-top:8px">Experimental &amp; mainnet-only. Routes real funds through the Vortex bridge (unaudited) and KoinDX. The pool is shallow — start small (capped at 0.05 ETH per bridge). Mana for the Koinos steps is sponsored, so you don't need any KOIN first.</div>
+      <div id="fund-bridge-body"><p class="muted">Loading…</p></div>
     </div>`;
 
   $("#fund-endpoint-save").addEventListener("click", onSaveOnrampEndpoint);
@@ -1196,6 +1197,7 @@ async function refreshFund() {
     /* keep last */
   }
   patchFundView();
+  refreshBridge();
 }
 
 function patchFundView() {
@@ -1260,6 +1262,117 @@ async function loadEthBalance() {
   } finally {
     _balBusy = false;
   }
+}
+
+// ---- bridge & swap (Phase 2) ----
+let BRIDGEJOB = null;
+const BRIDGE_ORDER = ["depositing", "awaiting_signatures", "redeeming", "swapping", "done"];
+const BRIDGE_LABELS = {
+  depositing: "Depositing ETH into the bridge",
+  awaiting_signatures: "Waiting for bridge guardians (~a few min)",
+  redeeming: "Minting vETH on Koinos",
+  swapping: "Swapping vETH → KOIN",
+};
+const fmtKoin = (sats) => (Number(BigInt(sats || "0")) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+async function refreshBridge() {
+  try {
+    BRIDGEJOB = await call("fund:bridgeStatus");
+  } catch {
+    /* keep last */
+  }
+  patchBridge();
+}
+
+function patchBridge() {
+  const el = document.getElementById("fund-bridge-body");
+  if (!el) return;
+  const job = BRIDGEJOB;
+  const active = job && !["done", "error"].includes(job.status);
+
+  if (active) {
+    const idx = BRIDGE_ORDER.indexOf(job.status);
+    const steps = BRIDGE_ORDER.slice(0, 4)
+      .map((s, i) => {
+        const ico = i < idx ? "✅" : i === idx ? '<span class="spin"></span>' : "⬜";
+        return `<div class="row" style="gap:8px;align-items:center"><span>${ico}</span><span class="${i === idx ? "" : "muted"}">${esc(BRIDGE_LABELS[s])}</span></div>`;
+      })
+      .join("");
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">${steps}</div>
+      <p class="hint" style="margin-top:10px">Keep the app open and unlocked. This can take several minutes and resumes automatically if interrupted.</p>`;
+    return;
+  }
+
+  let banner = "";
+  if (job && job.status === "done") {
+    banner = `<div class="banner good">✅ Bridged! Received ~<b>${esc(fmtKoin(job.koinReceived))} KOIN</b> — check the Wallet tab.</div>`;
+  } else if (job && job.status === "error") {
+    banner = `<div class="banner bad">Bridge stopped: ${esc(job.error || "unknown error")}${job.ethTxHash ? `<br><span class="small">Your ETH deposit (${esc(job.ethTxHash.slice(0, 12))}…) is safe — Retry resumes from where it left off.</span>` : ""}</div>`;
+  }
+  el.innerHTML = `${banner}
+    <label class="field" style="margin-top:10px"><span>Amount to bridge (ETH · max 0.05)</span>
+      <input id="fund-bridge-amt" type="number" min="0" max="0.05" step="0.001" class="mono" placeholder="0.01" style="max-width:180px"></label>
+    <div id="fund-bridge-quote" class="hint" style="min-height:18px"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="fund-bridge-start" class="btn primary">Bridge &amp; swap to KOIN</button>
+      ${job && job.status === "error" ? '<button id="fund-bridge-retry" class="btn">Retry</button>' : ""}
+      ${job ? '<button id="fund-bridge-reset" class="btn ghost">Reset</button>' : ""}
+    </div>`;
+  $("#fund-bridge-amt").addEventListener("input", debounceBridgeQuote);
+  $("#fund-bridge-start").addEventListener("click", onBridgeStart);
+  const retry = document.getElementById("fund-bridge-retry");
+  if (retry) retry.addEventListener("click", async () => { await call("fund:bridgeAdvance").catch(() => {}); refreshBridge(); });
+  const reset = document.getElementById("fund-bridge-reset");
+  if (reset) reset.addEventListener("click", async () => { await call("fund:bridgeReset").catch(() => {}); BRIDGEJOB = null; refreshBridge(); });
+}
+
+let _bridgeQuoteTimer = null;
+function debounceBridgeQuote() {
+  clearTimeout(_bridgeQuoteTimer);
+  _bridgeQuoteTimer = setTimeout(doBridgeQuote, 600);
+}
+async function doBridgeQuote() {
+  const q = document.getElementById("fund-bridge-quote");
+  const amt = document.getElementById("fund-bridge-amt");
+  if (!q || !amt || !Number(amt.value)) { if (q) q.textContent = ""; return; }
+  q.textContent = "Getting quote…";
+  try {
+    const r = await call("fund:bridgeQuote", { amountEth: amt.value });
+    const koin = r.swap && r.swap.amountOut ? fmtKoin(r.swap.amountOut) : "—";
+    const min = r.swap && r.swap.amountOutMin ? fmtKoin(r.swap.amountOutMin) : "—";
+    const gas = Number(r.deposit.gasCostEth || 0).toFixed(5);
+    q.innerHTML = `Deposit ${esc(r.deposit.amountEth)} ETH (gas ~${esc(gas)} ETH) → ~<b>${esc(koin)} KOIN</b> (min ${esc(min)} after slippage).${r.deposit.sufficient ? "" : ' <span style="color:var(--bad)">Not enough ETH for amount + gas.</span>'}`;
+  } catch (e) {
+    q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  }
+}
+
+async function onBridgeStart() {
+  const amt = document.getElementById("fund-bridge-amt");
+  const v = Number(amt && amt.value);
+  if (!v || v <= 0) return toast("Enter an amount to bridge", "bad");
+  if (v > 0.05) return toast("Max 0.05 ETH per bridge", "bad");
+  showModal({
+    title: "Bridge real ETH?",
+    body: `<p class="small">This sends <b>${esc(String(v))} ETH</b> to the Vortex bridge (unaudited), then mints vETH and swaps it to KOIN. It moves real funds and can take several minutes. Keep the app open and unlocked. Continue?</p>`,
+    actions: [
+      { label: "Cancel", onClick: (c) => c() },
+      {
+        label: "Bridge it",
+        class: "primary",
+        onClick: async (c) => {
+          c();
+          try {
+            await call("fund:bridgeStart", { amountEth: String(v) });
+            toast("Bridge started — follow the progress below", "good");
+          } catch (e) {
+            toast(e.message, "bad", 9000);
+          }
+          refreshBridge();
+        },
+      },
+    ],
+  });
 }
 
 async function onBuyEth() {
@@ -1618,6 +1731,7 @@ async function init() {
     }
     if (evt.type === "node" && S.view === "node") refreshNode();
     if (evt.type === "rewards") { refreshRewards(); S.balancesAt = 0; }
+    if (evt.type === "bridge" && S.view === "fund") refreshBridge();
     if (S.view === "dashboard") refreshDashboard();
   });
 

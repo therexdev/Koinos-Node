@@ -18,6 +18,14 @@ const { ProducerStats } = require("./lib/producer-stats");
 const FORCED_PLATFORM = process.env.KND_FORCE_PLATFORM || null;
 const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 const { weiToEth } = require("./lib/eth");
+const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrator");
+const { quoteDeposit } = require("./lib/eth-bridge");
+const { quoteSwap } = require("./lib/koindx");
+
+// Shared Coinbase Onramp endpoint + app-identity key (see onramp-endpoint/). At
+// module scope so both the IPC handlers and the bridge orchestrator use them.
+const DEFAULT_ONRAMP_ENDPOINT = "https://koinos-node.vercel.app/api/session";
+const ONRAMP_APP_KEY = "kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f";
 
 let win = null;
 
@@ -108,7 +116,23 @@ if (!gotLock) {
     const rewards = new RewardEngine({ chain, wallet, settings, state, stats, onEvent: sendEvent });
     rewards.start();
 
-    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, userData });
+    const bridge = new BridgeOrchestrator({
+      wallet,
+      provider: chain.provider(),
+      store: new JsonStore(path.join(userData, "fund-bridge.json"), { job: null }),
+      settings,
+      appKey: ONRAMP_APP_KEY,
+      network: settings.get("network", "mainnet"),
+      onEvent: sendEvent,
+    });
+    // Driver: advance an active (non-terminal) bridge job every 15s. Deposit is
+    // user-initiated; everything after it (poll → redeem → swap) auto-advances.
+    setInterval(() => {
+      const job = bridge.status();
+      if (job && !["done", "error", "depositing"].includes(job.status)) bridge.advance().catch(() => {});
+    }, 15000);
+
+    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, userData });
     createWindow();
     setupAutoUpdates();
 
@@ -166,7 +190,7 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, userData }) {
+function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, userData }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
@@ -438,11 +462,8 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   // ----- fund node (Ethereum on-ramp — Phase 1) -----
   // Shared, app-hosted Coinbase Onramp endpoint. Every install uses this by
   // default so the Buy button works with zero setup; advanced users can override
-  // it with their own endpoint in the Fund tab.
-  const DEFAULT_ONRAMP_ENDPOINT = "https://koinos-node.vercel.app/api/session";
-  // Identifies genuine app traffic to the endpoint. Not a true secret (the app
-  // is open-source), but it lets the endpoint reject casual/automated abuse.
-  const ONRAMP_APP_KEY = "kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f";
+  // it with their own endpoint in the Fund tab. (DEFAULT_ONRAMP_ENDPOINT and
+  // ONRAMP_APP_KEY are defined at module scope.)
   const effectiveOnrampEndpoint = () => settings.get("onrampEndpoint", "") || DEFAULT_ONRAMP_ENDPOINT;
 
   handle("fund:status", () => ({
@@ -518,6 +539,25 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
       }
     }
     throw new Error(`Couldn't fetch ETH balance: ${String(lastErr?.message || lastErr)}`);
+  });
+
+  // ----- fund node bridge (Phase 2: ETH -> vETH -> KOIN) -----
+  handle("fund:bridgeStatus", () => bridge.status());
+  handle("fund:bridgeReset", () => bridge.reset());
+  handle("fund:bridgeAdvance", () => bridge.advance());
+  handle("fund:bridgeStart", ({ amountEth, slippageBps } = {}) => bridge.start({ amountEth, slippageBps }));
+  handle("fund:bridgeQuote", async ({ amountEth } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    const network = settings.get("network", "mainnet");
+    const deposit = await quoteDeposit({ fromAddress: address, amountEth, koinosRecipient: wallet.address, network });
+    let swap = null;
+    try {
+      swap = await quoteSwap({ amountInSats: deposit.vethSats, slippageBps: slippageBps || 150, network, provider: chain.provider() });
+    } catch (e) {
+      swap = { error: String(e.message || e) };
+    }
+    return { deposit, swap, maxEth: MAX_BRIDGE_ETH };
   });
 
   // ----- utilities -----

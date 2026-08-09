@@ -1165,13 +1165,13 @@ function renderFundView() {
       </div>
     </div>
     <div class="card">
-      <h2>⚙️ Coinbase Onramp endpoint</h2>
-      <p class="hint">Coinbase's on-ramp needs a tiny serverless function (holding your free CDP key) to authorize purchases — the secret never ships inside the app. Deploy the one in the setup guide, then paste its URL here. Until then, just send ETH to the address on the left from any exchange or wallet.</p>
-      <label class="field"><span>Endpoint URL (https)</span>
-        <input id="fund-endpoint" type="text" class="mono" placeholder="https://your-worker.example.workers.dev" value="${esc(FUND.onrampEndpoint || "")}"></label>
+      <h2>⚙️ Coinbase Onramp endpoint <span class="muted small">advanced · optional</span></h2>
+      <p class="hint">Buying ETH with Coinbase works out of the box — nothing to set up. This only lets advanced users route purchases through their own Coinbase (CDP) endpoint instead of the built-in one. Leave blank to use the default.</p>
+      <label class="field"><span>Custom endpoint URL (https)</span>
+        <input id="fund-endpoint" type="text" class="mono" placeholder="Default: ${esc(FUND.onrampDefault || "built-in")}" value="${esc(FUND.onrampEndpoint || "")}"></label>
       <div class="row">
         <button id="fund-endpoint-save" class="btn primary">Save</button>
-        <button class="btn ghost" data-ext="https://github.com/therexdev/Koinos-Node/blob/HEAD/docs/coinbase-onramp.md">Setup guide ↗</button>
+        <button class="btn ghost" data-ext="https://github.com/therexdev/Koinos-Node/blob/HEAD/docs/coinbase-onramp.md">Self-host guide ↗</button>
       </div>
     </div>
     <div class="card">

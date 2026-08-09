@@ -435,10 +435,17 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("rewards:runNow", () => rewards.tick("manual"));
 
   // ----- fund node (Ethereum on-ramp — Phase 1) -----
+  // Shared, app-hosted Coinbase Onramp endpoint. Every install uses this by
+  // default so the Buy button works with zero setup; advanced users can override
+  // it with their own endpoint in the Fund tab.
+  const DEFAULT_ONRAMP_ENDPOINT = "https://koinos-node.vercel.app/api/session";
+  const effectiveOnrampEndpoint = () => settings.get("onrampEndpoint", "") || DEFAULT_ONRAMP_ENDPOINT;
+
   handle("fund:status", () => ({
     ethAddress: wallet.ethAddress,
-    onrampEndpoint: settings.get("onrampEndpoint", ""),
-    onrampConfigured: !!settings.get("onrampEndpoint", ""),
+    onrampEndpoint: settings.get("onrampEndpoint", ""), // user override; blank = built-in default
+    onrampDefault: DEFAULT_ONRAMP_ENDPOINT,
+    onrampConfigured: !!effectiveOnrampEndpoint(),
   }));
 
   // Asks the user's own Coinbase Onramp endpoint (a small serverless function
@@ -448,8 +455,8 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("fund:buyUrl", async ({ amountUsd } = {}) => {
     const address = wallet.ethAddress;
     if (!address) throw new Error("Create or unlock your wallet first to get a funding address.");
-    const endpoint = settings.get("onrampEndpoint", "");
-    if (!endpoint) throw new Error("Add your Coinbase Onramp endpoint URL in the Fund tab first.");
+    const endpoint = effectiveOnrampEndpoint();
+    if (!endpoint) throw new Error("No Coinbase Onramp endpoint is configured.");
     let token;
     try {
       const controller = new AbortController();

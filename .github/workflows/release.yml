@@ -58,13 +58,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Once every OS has uploaded, flip the draft to a published release and mark
-  # it "latest" so the download page and the in-app auto-updater pick it up.
+  # Once every OS has uploaded, flip the draft to a published release. The tag
+  # shape picks the channel: a prerelease tag (vX.Y.Z-beta.N — anything with a
+  # hyphen) is published as a GitHub Pre-release and is NEVER marked "latest",
+  # so stable/live installs don't pick it up; a plain tag is published as
+  # "latest" for everyone. The auto-updater side of this lives in
+  # setupAutoUpdates() (allowPrerelease keys off the build's own version).
   publish-release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Publish the release
+      - name: Publish the release (stable = latest, prerelease = beta channel)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" == *-* ]]; then
+            echo "Prerelease $TAG → beta channel (not marked latest)."
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            echo "Stable $TAG → latest."
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          fi

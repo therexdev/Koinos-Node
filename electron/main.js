@@ -135,6 +135,12 @@ function setupAutoUpdates() {
   }
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
+  // Channel selection by the running build's own version: a prerelease build
+  // (e.g. 0.3.0-beta.1 — anything with a "-" per semver) follows the beta line
+  // and always takes the highest version (betas now, stable when it's higher);
+  // a stable build ignores prereleases entirely. This keeps beta/test builds
+  // off your live users' machines with no separate app or feed.
+  updater.allowPrerelease = app.getVersion().includes("-");
   updater.on("update-available", (info) => {
     sendEvent({ type: "update", message: `Update v${info.version} found — downloading in the background…` });
   });

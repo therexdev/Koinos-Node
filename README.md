@@ -168,25 +168,50 @@ Default ports: mainnet — p2p `8888`, JSON-RPC `127.0.0.1:8080`, AMQP `5672`; h
 - No telemetry, no third-party services beyond the RPC endpoint you configure.
 - This app manages real funds. Back up your WIF. Test on Harbinger first if unsure.
 
-## Releasing new versions (maintainers)
+## Releasing (stable & beta channels)
 
 Installers are built and published automatically by GitHub Actions
-(`.github/workflows/release.yml`) whenever a version tag is pushed:
+(`.github/workflows/release.yml`) whenever a **version tag** is pushed. Nothing
+you commit or push to a branch reaches anyone — only a tag publishes a release.
+Two channels, chosen by the tag's shape:
+
+**Stable** — a plain tag like `v0.2.5`. Published as GitHub **Latest**; every
+installed app auto-updates to it.
 
 ```bash
-npm version minor          # or patch/major — bumps package.json + creates the tag
-git push --follow-tags
+npm version patch          # or minor/major — bumps package.json + lock, commits, tags
+git push --follow-tags origin <branch>
 ```
+
+**Beta** — a tag with a prerelease suffix like `v0.3.0-beta.1`. Published as a
+GitHub **Pre-release** (never Latest), so your live/stable users never receive
+it. Use it to test real, installable, auto-updating builds — ideally on a
+separate test machine.
+
+```bash
+npm version preminor --preid=beta    # 0.2.5 -> 0.3.0-beta.0  (start a beta line)
+npm version prerelease --preid=beta  # 0.3.0-beta.0 -> 0.3.0-beta.1  (next beta)
+git push --follow-tags origin <branch>
+```
+
+Install a beta once from the pre-release's assets on the Releases page (same
+unsigned-app notice as usual). From then on it auto-updates to each new
+`-beta.N` you push, and finally onto the matching **stable** release when you
+cut it (e.g. `v0.3.0`).
+
+**How the channels stay separate:** the auto-updater keys off the *running
+build's own version*. A stable build (e.g. `0.2.5`) ignores pre-releases; a beta
+build (`0.3.0-beta.1`) sets `allowPrerelease` and always takes the highest
+version — betas now, stable when it's higher. The workflow marks hyphenated
+tags as Pre-release and everything else as Latest.
 
 The workflow builds the Windows `.exe`, macOS `.dmg`/`.zip`, and Linux
 `.AppImage` on native runners, runs the test suite, and attaches everything
-(plus the `latest*.yml` auto-update metadata) to a GitHub Release for that
-tag. As soon as the release is live, installed apps pick it up via
-auto-update. No secrets need configuring — the workflow uses the built-in
-`GITHUB_TOKEN`.
+(plus the `latest*.yml` auto-update metadata) to the release. No secrets need
+configuring — it uses the built-in `GITHUB_TOKEN`.
 
-Local builds (for testing the packaging): `npm run dist:win`, or `npm run
-dist` for the current platform. Output lands in `dist/`.
+Local builds (no publish, for testing packaging): `npm run dist:win`, or
+`npm run dist` for the current platform. Output lands in `dist/`.
 
 ## Development
 

@@ -84,12 +84,15 @@ splits cleanly into an expensive shared half and a trivial per-user half:
   only infrastructure).
 
 A spike in [`../cloud/experiments/shared-core`](../cloud/experiments/shared-core)
-confirmed this both from the Koinos source (block producers declare **exclusive**
-`amq.gen-*` event queues → fanout, never a shared/competing queue) and empirically
-(two producers on one core, distinct keys/addresses, distinct queues, no collision).
-Measured marginal cost of an added user: **~3 MB RAM + a 28 KB key file** — so one
-modest host serves dozens of independent producers and the per-user price falls well
-under **$1/mo**. Full write-up + evidence in that folder's `FINDINGS.md`.
+confirmed this from the Koinos source (block producers declare **exclusive**
+`amq.gen-*` event queues → fanout, never a shared/competing queue), empirically for
+coexistence (two producers on one core, distinct keys/addresses, distinct queues,
+no collision), **and empirically for production** (two producers minting
+*concurrently* on one shared core reached a single consistent head with zero chain
+errors under maximal same-key contention). Measured marginal cost of an added user:
+**~3 MB RAM + a 28 KB key file** — so one modest host serves dozens of independent
+producers and the per-user price falls well under **$1/mo**. Full write-up +
+evidence in that folder's `FINDINGS.md` and `production-test/`.
 
 ## Roadmap
 

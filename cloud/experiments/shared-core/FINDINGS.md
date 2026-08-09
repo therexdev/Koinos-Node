@@ -114,10 +114,17 @@ own vote, and 100% of rewards. Solo, that same user pays for a whole VM.
 4. **Reward variance still applies per user.** Small VHP ⇒ infrequent blocks. Density
    fixes the *cost* side, not the variance side; that's inherent to solo production and
    is the honest limit of "individual, not pool."
-5. **Not yet tested: real production under load.** We proved coexistence + head-fanout.
-   The next validation is a devnet with VHP registered to each producer address, to
-   confirm two co-located producers both actually produce and get rewarded with no
-   interference. Expected fine (each is an ordinary node to the chain), but unproven.
+5. **Production under load — RESOLVED.** A follow-up test
+   ([`production-test/`](production-test/)) ran two producer microservices
+   producing **concurrently** on one shared core (federated, same authorized key =
+   maximal contention: competing blocks at *every* height). Both advanced to
+   Height 20 in lockstep on a single canonical head, both had blocks accepted,
+   **zero chain errors**, no restarts. The shared chain + mempool stay consistent
+   under concurrent production. Not reproduced here: a full **PoB** devnet with VHP
+   allocated to two distinct addresses (needs difficulty tuning) — but PoB
+   eligibility is computed independently per producer from (own VHP, shared head via
+   the proven fanout), so it is strictly easier than the same-key contention shown.
+   Reproduce end-to-end on Harbinger testnet when convenient.
 
 ## How this feeds Phase 3 (control plane + billing)
 

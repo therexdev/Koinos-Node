@@ -1288,6 +1288,11 @@ function patchBridge() {
   const el = document.getElementById("fund-bridge-body");
   if (!el) return;
   const job = BRIDGEJOB;
+  // Only re-render when the bridge state actually changes — otherwise the 5s
+  // status refresh rebuilds the card and clobbers the amount the user is typing.
+  const sig = `${job?.status || "none"}|${job?.error || ""}|${job?.koinReceived || ""}|${job?.ethTxHash || ""}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
   const active = job && !["done", "error"].includes(job.status);
 
   if (active) {

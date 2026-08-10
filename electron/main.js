@@ -20,6 +20,7 @@ const FORCED_PLATFORM = process.env.KND_FORCE_PLATFORM || null;
 const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 const { weiToEth } = require("./lib/eth");
 const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrator");
+const { RouteCOrchestrator, MAX_ROUTE_C_ETH } = require("./lib/route-c-orchestrator");
 const { quoteDeposit, maxBridgeable } = require("./lib/eth-bridge");
 const { quoteSend, maxSendable, sendEth } = require("./lib/eth-send");
 const { quoteSwap } = require("./lib/koindx");
@@ -136,7 +137,26 @@ if (!gotLock) {
       if (job && !["done", "error", "depositing"].includes(job.status)) bridge.advance().catch(() => {});
     }, 15000);
 
-    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, userData });
+    const routeC = new RouteCOrchestrator({
+      wallet,
+      provider: chain.provider(),
+      store: new JsonStore(path.join(userData, "fund-routec.json"), { routeCJob: null }),
+      settings,
+      appKey: ONRAMP_APP_KEY,
+      network: settings.get("network", "mainnet"),
+      onEvent: sendEvent,
+    });
+    // Driver: once started, Route C auto-advances all six Ethereum txs then the
+    // Koinos redeem. Ticks every 8s (near block time) and only while the wallet is
+    // unlocked, so a locked session pauses the flow instead of failing it.
+    setInterval(() => {
+      const job = routeC.status();
+      if (job && !["done", "error"].includes(job.status) && wallet.status().unlocked) {
+        routeC.advance().catch(() => {});
+      }
+    }, 8000);
+
+    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData });
     createWindow();
     setupAutoUpdates();
 
@@ -194,7 +214,7 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, userData }) {
+function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
@@ -563,6 +583,18 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("fund:bridgeReset", () => bridge.reset());
   handle("fund:bridgeAdvance", () => bridge.advance());
   handle("fund:bridgeStart", ({ amountEth, slippageBps } = {}) => bridge.start({ amountEth, slippageBps }));
+
+  // Route C (ETH → USDT → vKOIN → bridge → native KOIN). start() sets up + quotes;
+  // advance() is called once here to send the first tx, then the 8s driver takes over.
+  handle("fund:routeCStatus", () => routeC.status());
+  handle("fund:routeCReset", () => routeC.reset());
+  handle("fund:routeCAdvance", () => routeC.advance());
+  handle("fund:routeCResume", () => routeC.resume());
+  handle("fund:routeCStart", async ({ amountEth, slippageBps } = {}) => {
+    const job = await routeC.start({ amountEth, slippageBps });
+    routeC.advance().catch(() => {}); // kick the first Ethereum tx immediately
+    return job;
+  });
   handle("fund:bridgeMax", async () => {
     const address = wallet.ethAddress;
     if (!address) throw new Error("Create or unlock your wallet first.");

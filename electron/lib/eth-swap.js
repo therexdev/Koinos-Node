@@ -81,11 +81,24 @@ async function quoteEthToVkoin({ amountEth, slippageBps = 150, provider } = {}) 
   };
 }
 
+// Convenience wrappers the orchestrator uses to re-quote a single leg live right
+// before it swaps (fresh slippage floor on the actual amount).
+async function quoteUsdtOut({ amountWei, provider }) {
+  const v3 = new ethers.Contract(RC.V3_QUOTER, V3_QUOTER_ABI, provider);
+  return await quoteEthToUsdt(v3, BigInt(amountWei)); // { usdt, fee }
+}
+async function quoteVkoinOut({ usdtSats, provider }) {
+  const v4 = new ethers.Contract(RC.V4_QUOTER, V4_QUOTER_ABI, provider);
+  return await quoteUsdtToVkoin(v4, BigInt(usdtSats)); // bigint vKOIN sats
+}
+
 module.exports = {
   applySlippage,
   quoteEthToUsdt,
   quoteUsdtToVkoin,
   quoteEthToVkoin,
+  quoteUsdtOut,
+  quoteVkoinOut,
   V3_QUOTER_ABI,
   V4_QUOTER_ABI,
 };

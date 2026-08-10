@@ -1227,14 +1227,19 @@ function renderFundView() {
       <div id="fund-bridge-body"><p class="muted">Loading…</p></div>
     </div>
     <div class="card">
-      <div class="row spread"><h2 style="margin:0">📊 Compare funding routes</h2><span class="pill warn">preview</span></div>
-      <p class="hint">See which path gives the most KOIN for your ETH. <b>Route C</b> swaps to vKOIN on Uniswap and bridges it 1:1 — it taps a much deeper KOIN market, so it usually returns far more KOIN. Its in-app execution ships in the next beta; today the Bridge above runs Route&nbsp;B.</p>
+      <div class="row spread"><h2 style="margin:0">📊 Compare funding routes</h2><span class="pill">estimate</span></div>
+      <p class="hint">See which path gives the most KOIN for your ETH. <b>Route C</b> swaps to vKOIN on Uniswap and bridges it 1:1 — it taps a much deeper KOIN market, so it usually returns far more KOIN. Run it below, or use the classic Bridge above (Route&nbsp;B).</p>
       <label class="field"><span>Amount (ETH)</span>
         <div class="row" style="gap:8px">
           <input id="fund-cmp-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.05" style="max-width:180px">
           <button id="fund-cmp-go" class="btn">Compare</button>
         </div></label>
       <div id="fund-cmp-body" class="hint" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="row spread"><h2 style="margin:0">⚡ Fund via Route C (vKOIN)</h2><span class="pill warn">experimental</span></div>
+      <p class="hint">Swaps ETH → USDT → vKOIN on Uniswap, then bridges vKOIN to <b>native KOIN</b> (1:1). Usually yields far more KOIN than Route&nbsp;B. This moves real funds through several on-chain steps and auto-advances — keep the app open and unlocked. <b>New path: test with a small amount first.</b> Max 0.05 ETH.</p>
+      <div id="fund-routec-body"><p class="muted">Loading…</p></div>
     </div>
     <div class="card">
       <h2 style="margin:0">↗ Send ETH out</h2>
@@ -1276,6 +1281,7 @@ async function refreshFund() {
   }
   patchFundView();
   refreshBridge();
+  refreshRouteC();
 }
 
 function patchFundView() {
@@ -1432,6 +1438,126 @@ function patchBridge() {
   if (retry) retry.addEventListener("click", async () => { await call("fund:bridgeAdvance").catch(() => {}); refreshBridge(); });
   const reset = document.getElementById("fund-bridge-reset");
   if (reset) reset.addEventListener("click", async () => { await call("fund:bridgeReset").catch(() => {}); BRIDGEJOB = null; refreshBridge(); });
+}
+
+// ---- Route C execution (ETH → USDT → vKOIN → native KOIN) ----
+let ROUTECJOB = null;
+const ROUTEC_PHASES = ["Swap ETH → USDT", "Swap USDT → vKOIN", "Bridge vKOIN → Koinos", "Redeem to native KOIN"];
+function routeCPhase(status) {
+  if (status === "swap_eth_usdt") return 0;
+  if (["approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(status)) return 1;
+  if (["approve_bridge", "bridge_token", "awaiting_signatures"].includes(status)) return 2;
+  if (status === "redeeming") return 3;
+  if (status === "done") return 4;
+  return 0;
+}
+
+async function refreshRouteC() {
+  try {
+    ROUTECJOB = await call("fund:routeCStatus");
+  } catch {
+    /* keep last */
+  }
+  patchRouteC();
+}
+
+function patchRouteC() {
+  const el = document.getElementById("fund-routec-body");
+  if (!el) return;
+  const job = ROUTECJOB;
+  const sig = `${job?.status || "none"}|${job?.error || ""}|${job?.koinReceived || ""}|${job?.pendingTx || ""}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  const active = job && !["done", "error"].includes(job.status);
+
+  if (active) {
+    const idx = routeCPhase(job.status);
+    const steps = ROUTEC_PHASES.map((label, i) => {
+      const ico = i < idx ? "✅" : i === idx ? '<span class="spin"></span>' : "⬜";
+      return `<div class="row" style="gap:8px;align-items:center"><span>${ico}</span><span class="${i === idx ? "" : "muted"}">${esc(label)}</span></div>`;
+    }).join("");
+    const tx = job.pendingTx ? `<div class="small muted" style="margin-top:6px">Waiting on tx ${esc(String(job.pendingTx).slice(0, 12))}…</div>` : "";
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">${steps}</div>${tx}
+      <p class="hint" style="margin-top:10px">Keep the app open and unlocked. Auto-advances; resumes if interrupted.</p>`;
+    return;
+  }
+
+  let banner = "";
+  if (job && job.status === "done") {
+    banner = `<div class="banner good">✅ Funded via Route C! Received ~<b>${esc(fmtKoin(job.koinReceived))} KOIN</b> — check the Wallet tab.</div>`;
+  } else if (job && job.status === "error") {
+    const where = job.failedAt ? ` (at ${esc(job.failedAt)})` : "";
+    banner = `<div class="banner bad">Route C stopped${where}: ${esc(job.error || "unknown error")}<br><span class="small">Your funds are safe as ETH / USDT / vKOIN — Resume continues from the last step.</span></div>`;
+  }
+  el.innerHTML = `${banner}
+    <div class="field" style="margin-top:10px"><span>Amount (ETH · max 0.05)</span>
+      <div class="row" style="gap:8px;align-items:center">
+        <input id="fund-routec-amt" type="number" min="0" max="0.05" step="0.001" class="mono" placeholder="0.01" style="max-width:180px">
+      </div>
+    </div>
+    <div id="fund-routec-quote" class="hint" style="min-height:18px;margin-top:6px"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="fund-routec-start" class="btn primary">Swap &amp; bridge to KOIN</button>
+      ${job && job.status === "error" ? '<button id="fund-routec-resume" class="btn">Resume</button>' : ""}
+      ${job ? '<button id="fund-routec-reset" class="btn ghost">Reset</button>' : ""}
+    </div>`;
+  $("#fund-routec-amt").addEventListener("input", debounceRouteCQuote);
+  $("#fund-routec-start").addEventListener("click", onRouteCStart);
+  const resume = document.getElementById("fund-routec-resume");
+  if (resume) resume.addEventListener("click", async () => { await call("fund:routeCResume").catch((e) => toast(e.message, "bad")); refreshRouteC(); });
+  const reset = document.getElementById("fund-routec-reset");
+  if (reset) reset.addEventListener("click", async () => { await call("fund:routeCReset").catch(() => {}); ROUTECJOB = null; refreshRouteC(); });
+}
+
+let _routeCQuoteTimer = null;
+function debounceRouteCQuote() {
+  clearTimeout(_routeCQuoteTimer);
+  _routeCQuoteTimer = setTimeout(doRouteCQuote, 600);
+}
+async function doRouteCQuote() {
+  const q = document.getElementById("fund-routec-quote");
+  const amt = document.getElementById("fund-routec-amt");
+  if (!q || !amt || !Number(amt.value)) { if (q) q.textContent = ""; return; }
+  q.textContent = "Getting quote…";
+  try {
+    const r = await call("fund:routeCompare", { amountEth: amt.value });
+    const c = (r.routes || []).find((x) => x.id === "C");
+    if (c && c.koinOut) {
+      q.innerHTML = `~<b>${esc(fmtKoin(c.koinOut))} KOIN</b> (min ${esc(fmtKoin(c.koinOutMin))} after slippage).`;
+    } else {
+      q.innerHTML = `<span style="color:var(--bad)">Quote unavailable${c && c.error ? ": " + esc(c.error) : ""}</span>`;
+    }
+  } catch (e) {
+    q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  }
+}
+
+async function onRouteCStart() {
+  const amt = document.getElementById("fund-routec-amt");
+  const v = Number(amt && amt.value);
+  if (!v || v <= 0) return toast("Enter an ETH amount", "bad");
+  if (v > 0.05) return toast("Max 0.05 ETH while Route C is experimental", "bad");
+  showModal({
+    title: "Fund via Route C?",
+    body: `<p class="small">This swaps <b>${esc(String(v))} ETH</b> → USDT → vKOIN on Uniswap and bridges it to <b>native KOIN</b> across several real Ethereum transactions (unaudited bridge). It auto-advances and can take a few minutes — keep the app open and unlocked. <b>New path — test small first.</b> Continue?</p>`,
+    actions: [
+      { label: "Cancel", onClick: (c) => c() },
+      {
+        label: "Swap & bridge",
+        class: "primary",
+        onClick: async (c) => {
+          c();
+          try {
+            await call("fund:routeCStart", { amountEth: String(v) });
+            toast("Route C started — follow the progress below", "good");
+          } catch (e) {
+            toast(e.message, "bad", 9000);
+          }
+          refreshRouteC();
+        },
+      },
+    ],
+  });
 }
 
 let _bridgeQuoteTimer = null;
@@ -2012,6 +2138,7 @@ async function init() {
     if (evt.type === "node" && S.view === "node") refreshNode();
     if (evt.type === "rewards") { refreshRewards(); S.balancesAt = 0; }
     if (evt.type === "bridge" && S.view === "fund") refreshBridge();
+    if (evt.type === "routeC" && S.view === "fund") refreshRouteC();
     if (S.view === "dashboard") refreshDashboard();
   });
 

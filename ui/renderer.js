@@ -53,6 +53,15 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleString();
 }
 
+// Format a percentage (number) for a metric tile: more precision when small,
+// commas when huge.
+function fmtPct(v) {
+  if (v == null || !isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+  return v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits }) + "%";
+}
+
 function shortTx(txId) {
   const s = String(txId ?? "");
   return s.length > 18 ? `${s.slice(0, 10)}…${s.slice(-6)}` : s;
@@ -197,6 +206,10 @@ function renderDashboardView() {
     </div>
     <div class="widget-grid" id="d-tiles"></div>
     <div class="card">
+      <div class="row spread"><h2>💵 Profit &amp; projected return</h2><span class="muted small" id="d-returns-note"></span></div>
+      <div class="widget-grid" id="d-returns"></div>
+    </div>
+    <div class="card">
       <div class="row spread"><h2>📡 Activity feed</h2><span class="muted small" id="d-feed-note"></span></div>
       <div class="feed" id="d-feed"><span class="muted small">Loading…</span></div>
     </div>`;
@@ -284,6 +297,40 @@ function patchDashboardView() {
     tile("Deposits in", totals ? fmtSat(totals.depositsIn, 4) : "—", symbol + " received"),
   ];
   $("#d-tiles").innerHTML = tiles.join("");
+
+  // profit windows + projected return
+  const w = st && st.windows ? st.windows : null;
+  const ret = d.returns || null;
+  const yearlyCurrent = ret
+    ? ret.yearlyReturnPct != null
+      ? fmtPct(ret.yearlyReturnPct)
+      : fmtSat(ret.yearlyProfitSats, 2) + " " + symbol
+    : "—";
+  const yearlyCurrentSub =
+    ret && ret.yearlyReturnPct != null ? `≈ ${fmtSat(ret.yearlyProfitSats, 0)} ${symbol}/yr` : "at current rate";
+  let yearlyReburn = "—";
+  let yearlyReburnSub = "enable reburn to compound";
+  if (ret && ret.yearlyReturnReburnPct != null) {
+    yearlyReburn = fmtPct(ret.yearlyReturnReburnPct);
+    yearlyReburnSub = ret.reburnFraction > 0 ? `reburning ${Math.round(ret.reburnFraction * 100)}% of rewards` : "no reburn set";
+  } else if (ret && ret.yearlyProfitReburnSats) {
+    yearlyReburn = fmtSat(ret.yearlyProfitReburnSats, 2) + " " + symbol;
+  }
+  const returnTiles = [
+    tile("Daily profit", w ? fmtSat(w.last24h, 4) : "—", "last 24h", "good"),
+    tile("Weekly profit", w ? fmtSat(w.last7d, 4) : "—", "last 7 days", "good"),
+    tile("Monthly profit", w ? fmtSat(w.last30d, 4) : "—", "last 30 days", "good"),
+    tile("Yearly return", yearlyCurrent, yearlyCurrentSub, "accent"),
+    tile("Yearly + reburn", yearlyReburn, yearlyReburnSub, "accent"),
+  ];
+  $("#d-returns").innerHTML = returnTiles.join("");
+  $("#d-returns-note").textContent = !w
+    ? ""
+    : st.syncing
+      ? "history syncing — longer windows still catching up"
+      : w.daysTracked > 0 && w.daysTracked < 30
+        ? `based on ${w.daysTracked} day${w.daysTracked === 1 ? "" : "s"} of history`
+        : "";
 
   // feed
   const feedEl = $("#d-feed");

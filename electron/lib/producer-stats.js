@@ -1,6 +1,9 @@
 "use strict";
 
 const { classifyEntry, accumulate, EMPTY_TOTALS } = require("./koinos-events");
+const { addBlockToDaily, pruneDaily, computeWindows, DAY_MS } = require("./profit-metrics");
+
+const RECENT_WINDOW_MS = 2 * DAY_MS; // recent blocks kept for the rolling 24h window
 
 const PAGE = 100;              // entries per history page
 const MAX_PAGES_PER_REFRESH = 25; // cap backfill work per refresh (2500 entries)
@@ -23,15 +26,18 @@ class ProducerStats {
   }
 
   _load(key) {
-    return (
-      this.state.get(key, null) ?? {
-        cursorNext: 0, // next seq_num to backfill from
-        maxSeq: -1,
-        totals: { ...EMPTY_TOTALS },
-        feed: [],
-        updatedAt: 0,
-      }
-    );
+    const s = this.state.get(key, null) ?? {
+      cursorNext: 0, // next seq_num to backfill from
+      maxSeq: -1,
+      totals: { ...EMPTY_TOTALS },
+      feed: [],
+      daily: {}, // { [dayKey]: profitSats } — backfilled profit per day
+      recent: [], // [{ time, profit }] — recent blocks for the rolling 24h window
+      updatedAt: 0,
+    };
+    s.daily ??= {}; // backfill fields onto older cached state
+    s.recent ??= [];
+    return s;
   }
 
   get(networkId, address) {
@@ -40,6 +46,7 @@ class ProducerStats {
     return {
       totals: s.totals,
       feed: s.feed,
+      windows: computeWindows(s.daily, s.recent, Date.now()),
       syncing: s.cursorNext <= s.maxSeq,
       updatedAt: s.updatedAt,
     };
@@ -78,11 +85,18 @@ class ProducerStats {
       const seqs = latest.map((e) => Number(e.seq_num)).filter((n) => !Number.isNaN(n));
       s.maxSeq = Math.max(s.maxSeq, ...seqs);
       const feed = [];
+      const recentCut = Date.now() - RECENT_WINDOW_MS;
+      const recent = [];
       for (const entry of latest) {
         const rec = classifyEntry(entry, ctx);
-        if (rec) feed.push(rec);
+        if (!rec) continue;
+        feed.push(rec);
+        // Recent block profits power the true rolling-24h window immediately,
+        // even before the (oldest-first) cumulative backfill reaches today.
+        if (rec.type === "block" && rec.time >= recentCut) recent.push({ time: rec.time, profit: rec.profit });
       }
       s.feed = feed.slice(0, FEED_KEEP);
+      s.recent = recent;
     }
 
     // 2. Backfill cumulative totals from the cursor forward, capped per refresh.
@@ -101,7 +115,10 @@ class ProducerStats {
       if (!batch.length) break;
       for (const entry of batch) {
         const rec = classifyEntry(entry, ctx);
-        if (rec) s.totals = accumulate(s.totals, rec);
+        if (rec) {
+          s.totals = accumulate(s.totals, rec);
+          addBlockToDaily(s.daily, rec); // fold block profit into its day bucket
+        }
         const seq = Number(entry.seq_num);
         if (!Number.isNaN(seq)) s.cursorNext = Math.max(s.cursorNext, seq + 1);
       }
@@ -109,6 +126,7 @@ class ProducerStats {
       if (batch.length < PAGE) break; // caught up
     }
 
+    pruneDaily(s.daily, Date.now());
     s.updatedAt = Date.now();
     this.state.set(key, s);
     return {
@@ -116,6 +134,7 @@ class ProducerStats {
       available: true,
       totals: s.totals,
       feed: s.feed,
+      windows: computeWindows(s.daily, s.recent, Date.now()),
       syncing: s.cursorNext <= s.maxSeq,
     };
   }

@@ -12,6 +12,7 @@ const { NodeManager } = require("./lib/node-manager");
 const { SetupService } = require("./lib/setup");
 const { RewardEngine } = require("./lib/rewards");
 const { ProducerStats } = require("./lib/producer-stats");
+const { projectReturns } = require("./lib/profit-metrics");
 
 // Optional override so the guided-setup UI can be exercised for other
 // platforms during development/screenshots. Never set in production.
@@ -438,6 +439,16 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     out.balances = balances;
     out.stats = statsRes;
 
+    // Projected returns: annualize the recent daily profit rate against the
+    // producing stake (VHP), plus a compounded figure at the user's reburn rate.
+    const rcfg = out.rewards || {};
+    const reburnFraction = rcfg.enabled && rcfg.mode === "burn" ? Number(rcfg.pct || 0) / 100 : 0;
+    const windows = statsRes && statsRes.windows ? statsRes.windows : null;
+    const stakeSats = balances && !balances.error ? balances.vhp : "0";
+    out.returns = windows
+      ? projectReturns({ avgDailyProfitSats: windows.avgDailyProfit, stakeSats, reburnFraction })
+      : null;
+
     // Screenshot/demo-only override (never set in production): present a
     // running, synced node with representative balances so marketing shots
     // show a live dashboard.
@@ -450,6 +461,9 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
         progressPct: 100,
       };
       out.balances = { koin: "4308560000", vhp: "228813610000", mana: "3822790000" };
+      const demoWindows = { last24h: "31200000", last7d: "216500000", last30d: "934800000", avgDailyProfit: "31160000", daysTracked: 30 };
+      out.stats = { available: true, network: net.id, totals: out.stats?.totals ?? null, feed: out.stats?.feed ?? [], windows: demoWindows, syncing: false };
+      out.returns = projectReturns({ avgDailyProfitSats: demoWindows.avgDailyProfit, stakeSats: out.balances.vhp, reburnFraction: 0.5 });
     }
     return out;
   });

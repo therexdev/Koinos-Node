@@ -475,7 +475,20 @@ function renderWalletView() {
       <div class="stat"><div class="label">VHP</div><div class="value" id="bal-vhp">…</div><div class="sub">virtual hash power for block production</div></div>
       <div class="stat"><div class="label">Mana</div><div class="value" id="bal-mana">…</div><div class="sub">recharges over time, spent by transactions</div></div>
     </div>
-    <p class="muted" id="bal-note" style="margin-top:8px"></p>`;
+    <p class="muted" id="bal-note" style="margin-top:8px"></p>
+    <div class="card">
+      <div class="row spread"><h2 style="margin:0">⟠ Ethereum &amp; USDT</h2><span class="pill">funding wallet</span></div>
+      <p class="hint">Your Ethereum funding address, derived from this same wallet key. Receive ETH or USDT here to fund the node, or send them back out.</p>
+      <div class="row" style="gap:8px;align-items:center">
+        <div class="addr" id="w-eth-addr" style="flex:1">…</div>
+        <button id="w-eth-copy" class="btn">Copy</button>
+      </div>
+      <div class="banner warn" style="margin-top:10px">Send only <b>ETH or USDT on Ethereum Mainnet</b> to this address. Other networks/tokens may be lost.</div>
+      <div class="grid-2" style="margin-top:12px">
+        <div class="stat"><div class="label">ETH</div><div class="value" id="w-eth-bal">…</div><div class="sub"><button id="w-eth-send" class="btn ghost" style="padding:4px 12px">Send ETH</button></div></div>
+        <div class="stat"><div class="label">USDT</div><div class="value" id="w-usdt-bal">…</div><div class="sub"><button id="w-usdt-send" class="btn ghost" style="padding:4px 12px">Send USDT</button></div></div>
+      </div>
+    </div>`;
   $("#w-lock").addEventListener("click", async () => {
     await call("wallet:lock");
     toast("Wallet locked");
@@ -489,8 +502,148 @@ function renderWalletView() {
     call("util:openExternal", { url: net().explorer.address + S.wallet.address }).catch(() => {})
   );
   $("#w-send").addEventListener("click", openSendModal);
+  const ea = S.wallet.ethAddress || "";
+  $("#w-eth-addr").textContent = ea || "(unavailable)";
+  $("#w-eth-copy").addEventListener("click", async () => { await call("util:copy", { text: ea }); toast("ETH address copied"); });
+  $("#w-eth-send").addEventListener("click", openEthSendModal);
+  $("#w-usdt-send").addEventListener("click", openUsdtSendModal);
   patchBalances();
   refreshBalances(true);
+  refreshCryptoBalances();
+}
+
+async function refreshCryptoBalances() {
+  const setb = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  try {
+    const r = await call("fund:cryptoBalances");
+    const addrEl = document.getElementById("w-eth-addr");
+    if (addrEl && r.address) addrEl.textContent = r.address;
+    setb("w-eth-bal", Number(r.eth).toLocaleString(undefined, { maximumFractionDigits: 6 }));
+    setb("w-usdt-bal", Number(r.usdt).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+  } catch {
+    setb("w-eth-bal", "—");
+    setb("w-usdt-bal", "—");
+  }
+}
+
+// Send-ETH / Send-USDT modals (funding wallet withdrawals).
+function openEthSendModal() {
+  showModal({
+    title: "Send ETH",
+    body: `
+      <label class="field"><span>Recipient Ethereum address</span>
+        <input id="es-to" type="text" class="mono" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Amount (ETH)</span>
+        <div class="row" style="gap:8px">
+          <input id="es-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.01" style="max-width:200px">
+          <button id="es-max" class="btn ghost" style="padding:6px 12px">Max</button>
+        </div></label>
+      <div id="es-quote" class="hint" style="min-height:18px"></div>`,
+    actions: [
+      { label: "Cancel", onClick: (close) => close() },
+      {
+        label: "Send ETH", class: "primary",
+        onClick: async (close, modal) => {
+          const to = $("#es-to", modal).value.trim();
+          const amt = $("#es-amt", modal).value.trim();
+          if (!to || !Number(amt)) return toast("Enter a recipient and amount", "bad");
+          const btn = $$(".btn.primary", modal).pop();
+          busyButton(btn, true, "Sending…");
+          try {
+            const res = await call("fund:ethSend", { toAddress: to, amountEth: amt });
+            close();
+            toast(`Sent — tx ${res.hash.slice(0, 12)}…`, "good", 8000);
+            refreshCryptoBalances();
+          } catch (e) { toast(e.message, "bad", 9000); busyButton(btn, false); }
+        },
+      },
+    ],
+    onMount: (modal) => {
+      const to = $("#es-to", modal), amt = $("#es-amt", modal), q = $("#es-quote", modal);
+      let t = null;
+      const quote = async () => {
+        if (!Number(amt.value) || !to.value.trim()) { q.textContent = ""; return; }
+        q.textContent = "Getting quote…";
+        try {
+          const r = await call("fund:ethSendQuote", { toAddress: to.value.trim(), amountEth: amt.value });
+          q.innerHTML = r.sufficient
+            ? `Gas ~${esc(Number(r.gasCostEth).toFixed(5))} ETH · balance ${esc(Number(r.balanceEth).toFixed(5))} ETH`
+            : `<span style="color:var(--bad)">Not enough ETH for amount + gas (balance ${esc(Number(r.balanceEth).toFixed(5))})</span>`;
+        } catch (e) { q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
+      };
+      const deb = () => { clearTimeout(t); t = setTimeout(quote, 500); };
+      to.addEventListener("input", deb); amt.addEventListener("input", deb);
+      $("#es-max", modal).addEventListener("click", async () => {
+        try {
+          const r = await call("fund:ethSendMax", { toAddress: to.value.trim() });
+          const m = Math.floor(Number(r.maxEth) * 1e6) / 1e6;
+          if (!(m > 0)) return toast("Not enough ETH (after gas)", "bad");
+          amt.value = String(m); quote();
+        } catch (e) { toast(e.message, "bad"); }
+      });
+    },
+  });
+}
+
+function openUsdtSendModal() {
+  showModal({
+    title: "Send USDT",
+    body: `
+      <label class="field"><span>Recipient Ethereum address</span>
+        <input id="us-to" type="text" class="mono" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Amount (USDT)</span>
+        <div class="row" style="gap:8px">
+          <input id="us-amt" type="number" min="0" step="1" class="mono" placeholder="10" style="max-width:200px">
+          <button id="us-max" class="btn ghost" style="padding:6px 12px">Max</button>
+        </div></label>
+      <div id="us-quote" class="hint" style="min-height:18px"></div>
+      <p class="small muted">Gas is paid in ETH — keep a little ETH in this address.</p>`,
+    actions: [
+      { label: "Cancel", onClick: (close) => close() },
+      {
+        label: "Send USDT", class: "primary",
+        onClick: async (close, modal) => {
+          const to = $("#us-to", modal).value.trim();
+          const amt = $("#us-amt", modal).value.trim();
+          if (!to || !Number(amt)) return toast("Enter a recipient and amount", "bad");
+          const btn = $$(".btn.primary", modal).pop();
+          busyButton(btn, true, "Sending…");
+          try {
+            const res = await call("fund:usdtSend", { toAddress: to, amountUsdt: amt });
+            close();
+            toast(`Sent — tx ${res.hash.slice(0, 12)}…`, "good", 8000);
+            refreshCryptoBalances();
+          } catch (e) { toast(e.message, "bad", 9000); busyButton(btn, false); }
+        },
+      },
+    ],
+    onMount: (modal) => {
+      const to = $("#us-to", modal), amt = $("#us-amt", modal), q = $("#us-quote", modal);
+      let t = null;
+      const quote = async () => {
+        if (!Number(amt.value) || !to.value.trim()) { q.textContent = ""; return; }
+        q.textContent = "Getting quote…";
+        try {
+          const r = await call("fund:usdtSendQuote", { toAddress: to.value.trim(), amountUsdt: amt.value });
+          if (r.sufficientUsdt && r.sufficientGas) {
+            q.innerHTML = `Gas ~${esc(Number(r.gasCostEth).toFixed(5))} ETH · USDT balance ${esc(Number(r.usdtBalance).toFixed(2))}`;
+          } else {
+            q.innerHTML = `<span style="color:var(--bad)">${r.sufficientUsdt ? "" : "Not enough USDT. "}${r.sufficientGas ? "" : "Not enough ETH for gas."}</span>`;
+          }
+        } catch (e) { q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
+      };
+      const deb = () => { clearTimeout(t); t = setTimeout(quote, 500); };
+      to.addEventListener("input", deb); amt.addEventListener("input", deb);
+      $("#us-max", modal).addEventListener("click", async () => {
+        try {
+          const r = await call("fund:usdtSendMax");
+          const m = Math.floor(Number(r.maxUsdt) * 100) / 100;
+          if (!(m > 0)) return toast("No USDT balance", "bad");
+          amt.value = String(m); quote();
+        } catch (e) { toast(e.message, "bad"); }
+      });
+    },
+  });
 }
 
 function patchBalances() {
@@ -1222,48 +1375,17 @@ function renderFundView() {
       </div>
     </div>
     <div class="card">
-      <div class="row spread"><h2 style="margin:0">🌉 Bridge &amp; swap to KOIN</h2><span class="pill warn">beta</span></div>
-      <div class="banner warn" style="margin-top:8px">Experimental &amp; mainnet-only. Routes real funds through the Vortex bridge (unaudited) and KoinDX. The pool is shallow — start small (capped at 0.05 ETH per bridge). Mana for the Koinos steps is sponsored, so you don't need any KOIN first.</div>
-      <div id="fund-bridge-body"><p class="muted">Loading…</p></div>
+      <div class="row spread"><h2 style="margin:0">🚀 Fund your node</h2><span class="pill warn">beta</span></div>
+      <p class="hint">Enter an amount of ETH — we price <b>both</b> routes and put the best on top, each with its own button. <b>Route&nbsp;C</b> swaps to vKOIN on Uniswap and bridges it 1:1 to native KOIN (usually far more KOIN); <b>Route&nbsp;B</b> is the classic Vortex + KoinDX path. Mana for the Koinos steps is sponsored. Real funds through an unaudited bridge — <b>start small</b> (max 0.05 ETH).</p>
+      <div id="fund-unified-body"><p class="muted">Loading…</p></div>
     </div>
     <div class="card">
-      <div class="row spread"><h2 style="margin:0">📊 Compare funding routes</h2><span class="pill">estimate</span></div>
-      <p class="hint">See which path gives the most KOIN for your ETH. <b>Route C</b> swaps to vKOIN on Uniswap and bridges it 1:1 — it taps a much deeper KOIN market, so it usually returns far more KOIN. Run it below, or use the classic Bridge above (Route&nbsp;B).</p>
-      <label class="field"><span>Amount (ETH)</span>
-        <div class="row" style="gap:8px">
-          <input id="fund-cmp-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.05" style="max-width:180px">
-          <button id="fund-cmp-go" class="btn">Compare</button>
-        </div></label>
-      <div id="fund-cmp-body" class="hint" style="margin-top:8px"></div>
-    </div>
-    <div class="card">
-      <div class="row spread"><h2 style="margin:0">⚡ Fund via Route C (vKOIN)</h2><span class="pill warn">experimental</span></div>
-      <p class="hint">Swaps ETH → USDT → vKOIN on Uniswap, then bridges vKOIN to <b>native KOIN</b> (1:1). Usually yields far more KOIN than Route&nbsp;B. This moves real funds through several on-chain steps and auto-advances — keep the app open and unlocked. <b>New path: test with a small amount first.</b> Max 0.05 ETH.</p>
-      <div id="fund-routec-body"><p class="muted">Loading…</p></div>
-    </div>
-    <div class="card">
-      <h2 style="margin:0">↗ Send ETH out</h2>
-      <p class="hint">Withdraw ETH from your funding address to any Ethereum address — an exchange, another wallet, anywhere. Your ETH isn't locked to bridging. Unlock your wallet to send.</p>
-      <label class="field"><span>Recipient Ethereum address</span>
-        <input id="fund-send-to" type="text" class="mono" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
-      <label class="field"><span>Amount (ETH)</span>
-        <div class="row" style="gap:8px">
-          <input id="fund-send-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.01" style="max-width:180px">
-          <button id="fund-send-max" class="btn ghost" style="padding:6px 12px" title="Send your whole ETH balance minus gas">Max</button>
-        </div></label>
-      <div id="fund-send-quote" class="hint" style="min-height:18px;margin-top:6px"></div>
-      <div class="row" style="margin-top:10px">
-        <button id="fund-send-go" class="btn primary">Send ETH</button>
-      </div>
+      <div class="row spread"><h2 style="margin:0">💵 Fund with USDT</h2><span class="pill warn">beta</span></div>
+      <p class="hint">Already hold USDT at your funding address? Skip the ETH swap — this goes USDT → vKOIN → native KOIN directly (you still need a little ETH for gas). Max $150 worth.</p>
+      <div id="fund-usdt-body"><p class="muted">Loading…</p></div>
     </div>`;
 
   $("#fund-endpoint-save").addEventListener("click", onSaveOnrampEndpoint);
-  $("#fund-cmp-go").addEventListener("click", onCompareRoutes);
-  $("#fund-cmp-amt").addEventListener("keydown", (e) => { if (e.key === "Enter") onCompareRoutes(); });
-  $("#fund-send-to").addEventListener("input", debounceSendQuote);
-  $("#fund-send-amt").addEventListener("input", debounceSendQuote);
-  $("#fund-send-max").addEventListener("click", onSendMax);
-  $("#fund-send-go").addEventListener("click", onSendEth);
   $$("[data-ext]", root).forEach((a) =>
     a.addEventListener("click", (e) => {
       e.preventDefault();
@@ -1280,8 +1402,246 @@ async function refreshFund() {
     /* keep last */
   }
   patchFundView();
-  refreshBridge();
-  refreshRouteC();
+  refreshFundJobs();
+}
+
+// ---- unified funding: price both routes, pick one; plus USDT funding ----
+async function refreshFundJobs() {
+  try { BRIDGEJOB = await call("fund:bridgeStatus"); } catch { /* keep last */ }
+  try { ROUTECJOB = await call("fund:routeCStatus"); } catch { /* keep last */ }
+  patchFundUnified();
+  patchUsdtFund();
+}
+
+function isTerminal(j) { return !j || ["done", "error"].includes(j.status); }
+function anyFundingActive() {
+  return !!((BRIDGEJOB && !isTerminal(BRIDGEJOB)) || (ROUTECJOB && !isTerminal(ROUTECJOB)));
+}
+
+const BRIDGE_PHASES = ["Deposit ETH into the bridge", "Wait for guardians", "Redeem to vETH", "Swap vETH → KOIN"];
+function bridgePhaseIdx(status) { return BRIDGE_ORDER.indexOf(status); }
+
+function fundDoneBanner(route, koin) {
+  return `<div class="banner good">✅ ${esc(route)} complete — received ~<b>${esc(fmtKoin(koin))} KOIN</b>. Check the Wallet tab.</div>`;
+}
+function fundErrorBanner(route, job, safeNote) {
+  const where = job.failedAt ? ` (at ${esc(job.failedAt)})` : "";
+  return `<div class="banner bad">${esc(route)} stopped${where}: ${esc(job.error || "unknown error")}${safeNote ? `<br><span class="small">${esc(safeNote)}</span>` : ""}</div>`;
+}
+
+function fundProgress(kind, job) {
+  const phases = kind === "bridge" ? BRIDGE_PHASES : ROUTEC_PHASES;
+  const idx = kind === "bridge" ? bridgePhaseIdx(job.status) : routeCPhase(job.status);
+  const steps = phases.map((label, i) => {
+    const ico = i < idx ? "✅" : i === idx ? '<span class="spin"></span>' : "⬜";
+    return `<div class="row" style="gap:8px;align-items:center"><span>${ico}</span><span class="${i === idx ? "" : "muted"}">${esc(label)}</span></div>`;
+  }).join("");
+  const tx = job.pendingTx ? `<div class="small muted" style="margin-top:6px">Waiting on tx ${esc(String(job.pendingTx).slice(0, 12))}…</div>` : "";
+  return `<div style="margin-top:4px"><b>Route ${kind === "bridge" ? "B" : "C"}</b> running…</div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">${steps}</div>${tx}
+    <p class="hint" style="margin-top:10px">Keep the app open and unlocked. Auto-advances; resumes if interrupted.</p>`;
+}
+
+function patchFundUnified() {
+  const el = document.getElementById("fund-unified-body");
+  if (!el) return;
+  const b = BRIDGEJOB, c = ROUTECJOB;
+  const active = (b && !isTerminal(b)) ? { kind: "bridge", job: b }
+    : (c && !isTerminal(c) && c.source !== "usdt") ? { kind: "routeC", job: c } : null;
+  const sig = `${b?.status || "-"}|${b?.pendingTx || ""}|${c?.status || "-"}|${c?.source || ""}|${c?.pendingTx || ""}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+
+  if (active) {
+    el.innerHTML = fundProgress(active.kind, active.job);
+    return;
+  }
+
+  let banner = "";
+  if (b && b.status === "done") banner += fundDoneBanner("Route B", b.koinReceived);
+  else if (b && b.status === "error") banner += fundErrorBanner("Route B", b, b.ethTxHash ? "Your ETH deposit is safe — retry to resume." : "");
+  if (c && c.source !== "usdt" && c.status === "done") banner += fundDoneBanner("Route C", c.koinReceived);
+  else if (c && c.source !== "usdt" && c.status === "error") banner += fundErrorBanner("Route C", c, "Funds are safe as ETH / USDT / vKOIN.");
+  const usdtBusy = c && !isTerminal(c) && c.source === "usdt";
+
+  const ctl = [];
+  if (b && b.status === "error") ctl.push('<button class="btn" data-act="b-retry">Retry Route B</button>', '<button class="btn ghost" data-act="b-clear">Clear</button>');
+  else if (b && b.status === "done") ctl.push('<button class="btn ghost" data-act="b-clear">Clear</button>');
+  if (c && c.source !== "usdt" && c.status === "error") ctl.push('<button class="btn" data-act="c-resume">Resume Route C</button>', '<button class="btn ghost" data-act="c-clear">Clear</button>');
+  else if (c && c.source !== "usdt" && c.status === "done") ctl.push('<button class="btn ghost" data-act="c-clear">Clear</button>');
+  const controls = ctl.length ? `<div class="row" style="gap:8px;margin-bottom:8px">${ctl.join("")}</div>` : "";
+
+  el.innerHTML = `${banner}${controls}
+    <label class="field"><span>Amount (ETH · max 0.05)</span>
+      <div class="row" style="gap:8px">
+        <input id="fund-u-amt" type="number" min="0" max="0.05" step="0.001" class="mono" placeholder="0.02" style="max-width:180px" ${usdtBusy ? "disabled" : ""}>
+      </div></label>
+    <div id="fund-u-routes" class="hint" style="margin-top:8px">${usdtBusy ? '<span class="muted">A USDT funding is in progress below…</span>' : "Enter an amount to see both routes."}</div>`;
+  el.querySelectorAll("[data-act]").forEach((btn) => btn.addEventListener("click", () => onFundControl(btn.dataset.act)));
+  const amt = document.getElementById("fund-u-amt");
+  if (amt && !usdtBusy) amt.addEventListener("input", debounceUnifiedQuote);
+}
+
+async function onFundControl(act) {
+  try {
+    if (act === "b-retry") await call("fund:bridgeAdvance");
+    else if (act === "b-clear") { await call("fund:bridgeReset"); BRIDGEJOB = null; }
+    else if (act === "c-resume") await call("fund:routeCResume");
+    else if (act === "c-clear" || act === "u-clear") { await call("fund:routeCReset"); ROUTECJOB = null; }
+  } catch (e) { toast(e.message, "bad"); }
+  refreshFundJobs();
+}
+
+let _uQuoteTimer = null;
+function debounceUnifiedQuote() { clearTimeout(_uQuoteTimer); _uQuoteTimer = setTimeout(doUnifiedQuote, 600); }
+async function doUnifiedQuote() {
+  const amt = document.getElementById("fund-u-amt");
+  const box = document.getElementById("fund-u-routes");
+  if (!amt || !box) return;
+  if (!Number(amt.value)) { box.textContent = "Enter an amount to see both routes."; return; }
+  box.innerHTML = '<span class="muted">Pricing both routes…</span>';
+  try {
+    const r = await call("fund:routeCompare", { amountEth: amt.value });
+    box.innerHTML = renderRouteChoices(r);
+    box.querySelectorAll("[data-route]").forEach((btn) => btn.addEventListener("click", () => onPickRoute(btn.dataset.route, amt.value)));
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  }
+}
+
+function renderRouteChoices(r) {
+  const routes = [...(r.routes || [])].sort((a, b) => {
+    const av = a.koinOut ? BigInt(a.koinOut) : -1n, bv = b.koinOut ? BigInt(b.koinOut) : -1n;
+    return bv > av ? 1 : bv < av ? -1 : 0;
+  });
+  return routes.map((rt) => {
+    const koin = rt.koinOut ? fmtKoin(rt.koinOut) : null;
+    const best = rt.isBest ? ' <span class="good">★ best</span>' : "";
+    const mult = rt.bestMultiple && !rt.isBest ? ` <span class="muted small">— best returns ${esc(String(rt.bestMultiple))}× more</span>` : "";
+    const val = koin ? `<b>${esc(koin)} KOIN</b>${best}${mult}` : `<span style="color:var(--bad)">unavailable${rt.error ? ": " + esc(rt.error) : ""}</span>`;
+    const btn = koin ? `<button class="btn ${rt.isBest ? "primary" : ""}" data-route="${esc(rt.id)}">Use Route ${esc(rt.id)}</button>` : "";
+    return `<div style="padding:10px 0;border-top:1px solid var(--border)">
+      <div class="row spread" style="gap:8px"><div><b>Route ${esc(rt.id)}</b> — ${esc(rt.label)}</div>${btn}</div>
+      <div class="muted small" style="margin-top:2px">${esc((rt.steps || []).join(" → "))}</div>
+      <div style="margin-top:3px">${val}</div>
+    </div>`;
+  }).join("");
+}
+
+function onPickRoute(routeId, amountEth) {
+  const v = Number(amountEth);
+  if (!v || v <= 0) return toast("Enter an amount", "bad");
+  if (v > 0.05) return toast("Max 0.05 ETH while this is in beta", "bad");
+  if (anyFundingActive()) return toast("A funding is already in progress", "bad");
+  const isC = routeId === "C";
+  showModal({
+    title: `Fund via Route ${routeId}?`,
+    body: `<p class="small">This runs <b>${esc(String(v))} ETH</b> through <b>Route ${esc(routeId)}</b> — ${isC ? "swap ETH→USDT→vKOIN on Uniswap, then bridge vKOIN to native KOIN" : "deposit to the Vortex bridge, then swap vETH→KOIN on KoinDX"}. Real funds, several on-chain steps, auto-advances. Keep the app open and unlocked. Continue?</p>`,
+    actions: [
+      { label: "Cancel", onClick: (c) => c() },
+      {
+        label: `Run Route ${routeId}`,
+        class: "primary",
+        onClick: async (c) => {
+          c();
+          try {
+            if (isC) await call("fund:routeCStart", { amountEth: String(v), source: "eth" });
+            else await call("fund:bridgeStart", { amountEth: String(v) });
+            toast(`Route ${routeId} started — follow the progress here`, "good");
+          } catch (e) { toast(e.message, "bad", 9000); }
+          refreshFundJobs();
+        },
+      },
+    ],
+  });
+}
+
+function patchUsdtFund() {
+  const el = document.getElementById("fund-usdt-body");
+  if (!el) return;
+  const c = ROUTECJOB;
+  const owns = c && !isTerminal(c) && c.source === "usdt";
+  const sig = `${c?.status || "-"}|${c?.source || ""}|${c?.pendingTx || ""}|${anyFundingActive()}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+
+  if (owns) { el.innerHTML = fundProgress("routeC", c); return; }
+
+  let banner = "";
+  if (c && c.source === "usdt" && c.status === "done") banner = fundDoneBanner("USDT funding", c.koinReceived);
+  else if (c && c.source === "usdt" && c.status === "error") banner = fundErrorBanner("USDT funding", c, "Funds are safe as USDT / vKOIN.");
+  const busyElsewhere = anyFundingActive();
+
+  el.innerHTML = `${banner}
+    <label class="field"><span>Amount (USDT · max 150)</span>
+      <div class="row" style="gap:8px">
+        <input id="fund-usdt-amt" type="number" min="0" step="1" class="mono" placeholder="20" style="max-width:180px" ${busyElsewhere ? "disabled" : ""}>
+        <button id="fund-usdt-max" class="btn ghost" style="padding:6px 12px" ${busyElsewhere ? "disabled" : ""}>Max</button>
+      </div></label>
+    <div id="fund-usdt-quote" class="hint" style="min-height:18px;margin-top:6px"></div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <button id="fund-usdt-go" class="btn primary" ${busyElsewhere ? "disabled" : ""}>Swap &amp; bridge to KOIN</button>
+      ${c && c.source === "usdt" && c.status === "error" ? '<button id="fund-usdt-resume" class="btn">Resume</button>' : ""}
+      ${c && c.source === "usdt" && (c.status === "error" || c.status === "done") ? '<button class="btn ghost" data-act="u-clear">Clear</button>' : ""}
+    </div>
+    ${busyElsewhere ? '<p class="hint">Finish the funding above first.</p>' : ""}`;
+  if (!busyElsewhere) {
+    $("#fund-usdt-amt").addEventListener("input", debounceUsdtFundQuote);
+    $("#fund-usdt-max").addEventListener("click", onUsdtFundMax);
+    $("#fund-usdt-go").addEventListener("click", onUsdtFundStart);
+  }
+  const resume = document.getElementById("fund-usdt-resume");
+  if (resume) resume.addEventListener("click", async () => { await call("fund:routeCResume").catch((e) => toast(e.message, "bad")); refreshFundJobs(); });
+  el.querySelectorAll("[data-act]").forEach((btn) => btn.addEventListener("click", () => onFundControl(btn.dataset.act)));
+}
+
+let _usdtFundQuoteTimer = null;
+function debounceUsdtFundQuote() { clearTimeout(_usdtFundQuoteTimer); _usdtFundQuoteTimer = setTimeout(doUsdtFundQuote, 600); }
+async function doUsdtFundQuote() {
+  const amt = document.getElementById("fund-usdt-amt");
+  const q = document.getElementById("fund-usdt-quote");
+  if (!amt || !q || !Number(amt.value)) { if (q) q.textContent = ""; return; }
+  q.textContent = "Getting quote…";
+  try {
+    const r = await call("fund:usdtFundQuote", { amountUsdt: amt.value });
+    q.innerHTML = `~<b>${esc(fmtKoin(r.koinOut))} KOIN</b> (min ${esc(fmtKoin(r.koinOutMin))} after slippage).`;
+  } catch (e) { q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
+}
+async function onUsdtFundMax() {
+  const amt = document.getElementById("fund-usdt-amt");
+  if (!amt) return;
+  try {
+    const r = await call("fund:usdtSendMax");
+    let max = Math.floor(Number(r.maxUsdt) * 100) / 100;
+    if (max > 150) max = 150;
+    if (!(max > 0)) return toast("No USDT balance in your funding address", "bad");
+    amt.value = String(max);
+    doUsdtFundQuote();
+  } catch (e) { toast(e.message, "bad"); }
+}
+function onUsdtFundStart() {
+  const amt = document.getElementById("fund-usdt-amt");
+  const v = Number(amt && amt.value);
+  if (!v || v <= 0) return toast("Enter a USDT amount", "bad");
+  if (v > 150) return toast("Max $150 while this is in beta", "bad");
+  if (anyFundingActive()) return toast("A funding is already in progress", "bad");
+  showModal({
+    title: "Fund with USDT?",
+    body: `<p class="small">This swaps <b>${esc(String(v))} USDT</b> → vKOIN on Uniswap and bridges it to native KOIN. Needs a little ETH in your funding address for gas. Real funds, auto-advances. Continue?</p>`,
+    actions: [
+      { label: "Cancel", onClick: (c) => c() },
+      {
+        label: "Swap & bridge",
+        class: "primary",
+        onClick: async (c) => {
+          c();
+          try { await call("fund:routeCStart", { source: "usdt", amountUsdt: String(v) }); toast("USDT funding started", "good"); }
+          catch (e) { toast(e.message, "bad", 9000); }
+          refreshFundJobs();
+        },
+      },
+    ],
+  });
 }
 
 function patchFundView() {
@@ -2137,8 +2497,7 @@ async function init() {
     }
     if (evt.type === "node" && S.view === "node") refreshNode();
     if (evt.type === "rewards") { refreshRewards(); S.balancesAt = 0; }
-    if (evt.type === "bridge" && S.view === "fund") refreshBridge();
-    if (evt.type === "routeC" && S.view === "fund") refreshRouteC();
+    if ((evt.type === "bridge" || evt.type === "routeC") && S.view === "fund") refreshFundJobs();
     if (S.view === "dashboard") refreshDashboard();
   });
 

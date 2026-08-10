@@ -21,10 +21,11 @@ const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 const { weiToEth } = require("./lib/eth");
 const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrator");
 const { RouteCOrchestrator, MAX_ROUTE_C_ETH } = require("./lib/route-c-orchestrator");
-const { quoteDeposit, maxBridgeable } = require("./lib/eth-bridge");
+const { quoteDeposit, maxBridgeable, makeProvider } = require("./lib/eth-bridge");
 const { quoteSend, maxSendable, sendEth } = require("./lib/eth-send");
+const { usdtBalance, quoteUsdtSend, maxUsdtSendable, sendUsdt } = require("./lib/usdt-send");
 const { quoteSwap } = require("./lib/koindx");
-const { quoteEthToVkoin } = require("./lib/eth-swap");
+const { quoteEthToVkoin, quoteVkoinOut, applySlippage } = require("./lib/eth-swap");
 const { compareRoutes, descriptor } = require("./lib/fund-routes");
 
 // Shared Coinbase Onramp endpoint + app-identity key (see onramp-endpoint/). At
@@ -590,8 +591,8 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("fund:routeCReset", () => routeC.reset());
   handle("fund:routeCAdvance", () => routeC.advance());
   handle("fund:routeCResume", () => routeC.resume());
-  handle("fund:routeCStart", async ({ amountEth, slippageBps } = {}) => {
-    const job = await routeC.start({ amountEth, slippageBps });
+  handle("fund:routeCStart", async ({ amountEth, amountUsdt, source, slippageBps } = {}) => {
+    const job = await routeC.start({ amountEth, amountUsdt, source, slippageBps });
     routeC.advance().catch(() => {}); // kick the first Ethereum tx immediately
     return job;
   });
@@ -642,9 +643,9 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     let routeC;
     try {
       const q = await quoteEthToVkoin({ amountEth, slippageBps });
-      routeC = { ...descriptor("C"), executable: false, koinOut: q.koinOut, koinOutMin: q.koinOutMin, usdtOut: q.usdtOut };
+      routeC = { ...descriptor("C"), executable: true, koinOut: q.koinOut, koinOutMin: q.koinOutMin, usdtOut: q.usdtOut };
     } catch (e) {
-      routeC = { ...descriptor("C"), executable: false, koinOut: null, error: String(e.message || e) };
+      routeC = { ...descriptor("C"), executable: true, koinOut: null, error: String(e.message || e) };
     }
 
     return { ...compareRoutes([routeB, routeC]), amountEth: String(amountEth), slippageBps };
@@ -667,6 +668,43 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     if (!wallet.ethAddress) throw new Error("Create or unlock your wallet first.");
     const res = await sendEth({ ethPrivHex: wallet.ethPrivateKey(), toAddress, amountEth });
     return res;
+  });
+
+  // ----- ETH + USDT balances (one round-trip) for the Wallet tab -----
+  handle("fund:cryptoBalances", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    const provider = await makeProvider();
+    const [ethWei, usdt] = await Promise.all([provider.getBalance(address), usdtBalance({ address, provider })]);
+    return { address, ethWei: ethWei.toString(), eth: weiToEth("0x" + ethWei.toString(16)), usdtSats: usdt.sats, usdt: usdt.usdt };
+  });
+
+  // ----- withdraw / send USDT out -----
+  handle("fund:usdtSendQuote", async ({ toAddress, amountUsdt } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return quoteUsdtSend({ fromAddress: address, toAddress, amountUsdt });
+  });
+  handle("fund:usdtSendMax", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return maxUsdtSendable({ fromAddress: address });
+  });
+  // REAL USDT MOVES HERE. Gated on an unlocked wallet (ethPrivateKey throws locked).
+  handle("fund:usdtSend", async ({ toAddress, amountUsdt } = {}) => {
+    if (!wallet.ethAddress) throw new Error("Create or unlock your wallet first.");
+    return sendUsdt({ ethPrivHex: wallet.ethPrivateKey(), toAddress, amountUsdt });
+  });
+
+  // ----- quote KOIN out for funding the node directly from USDT (Route C) -----
+  handle("fund:usdtFundQuote", async ({ amountUsdt, slippageBps = 150 } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    const provider = await makeProvider();
+    const usdtSats = require("./lib/usdt-send").parseUsdt(amountUsdt);
+    if (usdtSats <= 0n) throw new Error("Amount must be greater than 0");
+    const koin = await quoteVkoinOut({ usdtSats, provider });
+    return { amountUsdt: String(amountUsdt), koinOut: koin.toString(), koinOutMin: applySlippage(koin, slippageBps).toString(), slippageBps };
   });
 
   // ----- utilities -----

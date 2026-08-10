@@ -23,11 +23,13 @@ const { fetchSponsorAddress, coSignAndBroadcast } = require("./sponsor-relay");
 const { quoteEthToVkoin, quoteUsdtOut, quoteVkoinOut, applySlippage } = require("./eth-swap");
 const swap = require("./eth-swap-exec");
 const { buildTransferTokensTx, bridgePaused } = require("./eth-bridge-token");
+const { parseUsdt, formatUsdt } = require("./usdt-send");
 const { BRIDGE } = require("./bridge-constants");
 const RC = require("./route-constants");
 
-// Safety cap — keep Route C amounts small while it's new. Matches Route B.
+// Safety caps — keep Route C amounts small while it's new. Matches Route B.
 const MAX_ROUTE_C_ETH = "0.05";
+const MAX_ROUTE_C_USDT = "150"; // ~ the USD value of the ETH cap, with headroom
 const DEFAULT_SLIPPAGE_BPS = 150; // 1.5%
 const PERMIT2_EXPIRY_SEC = 3600;
 const SWAP_DEADLINE_SEC = 1800;
@@ -91,39 +93,67 @@ class RouteCOrchestrator {
     return BRIDGE[this.network].ethBridge;
   }
 
-  // Begin a new Route C funding. Validates + quotes before anything moves, snapshots
-  // the starting USDT balance (so the post-swap delta is exact), and persists.
-  async start({ amountEth, slippageBps = DEFAULT_SLIPPAGE_BPS } = {}) {
+  // Begin a new Route C funding. `source` is "eth" (swap ETH→USDT→vKOIN…) or
+  // "usdt" (the user already holds USDT — skip the ETH leg and start at the vKOIN
+  // swap). Validates + quotes before anything moves, snapshots starting balances
+  // (so post-swap deltas are exact), and persists.
+  async start({ amountEth, amountUsdt, source = "eth", slippageBps = DEFAULT_SLIPPAGE_BPS } = {}) {
     const cur = this.status();
     if (cur && !TERMINAL.has(cur.status)) throw new Error("A Route C funding is already in progress");
     if (!this.wallet.ethAddress) throw new Error("Create or unlock your wallet first");
-    this._koinosSigner(); // ensure the Koinos key is unlocked before spending ETH
+    this._koinosSigner(); // ensure the Koinos key is unlocked before spending funds
 
+    const wallet = await this._eth();
+    if (await bridgePaused(this._ethProvider, this.network)) throw new Error("The Vortex bridge is currently paused");
+    const common = {
+      slippageBps,
+      source,
+      koinosRecipient: this.wallet.address,
+      ethFrom: wallet.address,
+      pendingTx: null,
+      startedAt: Date.now(),
+    };
+
+    if (source === "usdt") {
+      const usdtSats = parseUsdt(amountUsdt);
+      if (usdtSats <= 0n) throw new Error("Amount must be greater than 0");
+      if (usdtSats > parseUsdt(MAX_ROUTE_C_USDT)) {
+        throw new Error(`Amount ${formatUsdt(usdtSats)} USDT exceeds the safety cap of ${MAX_ROUTE_C_USDT} USDT`);
+      }
+      const usdtBal = await swap.balanceOf(this._ethProvider, RC.USDT, wallet.address);
+      if (usdtBal < usdtSats) throw new Error("Insufficient USDT balance for that amount");
+      const ethBal = await this._ethProvider.getBalance(wallet.address);
+      if (ethBal <= 0n) throw new Error("This address needs a little ETH to pay gas for the swaps");
+      const vkoinExpected = await quoteVkoinOut({ usdtSats, provider: this._ethProvider });
+      const vkoinBefore = (await swap.balanceOf(this._ethProvider, RC.VKOIN, wallet.address)).toString();
+      this._save({
+        ...common,
+        status: "approve_permit2", // skip swap_eth_usdt — USDT is already in hand
+        amountUsdt: formatUsdt(usdtSats),
+        usdtSats: usdtSats.toString(),
+        vkoinBefore,
+        estKoinOut: vkoinExpected.toString(),
+      });
+      return this.status();
+    }
+
+    // source === "eth"
     const amt = ethers.parseEther(String(amountEth));
     if (amt <= 0n) throw new Error("Amount must be greater than 0");
     if (amt > ethers.parseEther(MAX_ROUTE_C_ETH)) {
       throw new Error(`Amount ${ethers.formatEther(amt)} ETH exceeds the safety cap of ${MAX_ROUTE_C_ETH} ETH`);
     }
-
-    const wallet = await this._eth();
-    if (await bridgePaused(this._ethProvider, this.network)) throw new Error("The Vortex bridge is currently paused");
-    // Quote up front: validates both pools are reachable and gives an estimate.
     const quote = await quoteEthToVkoin({ amountEth, slippageBps, provider: this._ethProvider });
     const balance = await this._ethProvider.getBalance(wallet.address);
     if (balance <= amt) throw new Error("Insufficient ETH to cover the swap plus gas");
     const usdtBefore = (await swap.balanceOf(this._ethProvider, RC.USDT, wallet.address)).toString();
-
     this._save({
+      ...common,
       status: "swap_eth_usdt",
       amountEth: String(amountEth),
       amountWei: amt.toString(),
-      slippageBps,
-      koinosRecipient: this.wallet.address,
-      ethFrom: wallet.address,
       usdtBefore,
       estKoinOut: quote.koinOut,
-      pendingTx: null,
-      startedAt: Date.now(),
     });
     return this.status();
   }
@@ -300,4 +330,4 @@ class RouteCOrchestrator {
   }
 }
 
-module.exports = { RouteCOrchestrator, nextAction, MAX_ROUTE_C_ETH, DEFAULT_SLIPPAGE_BPS };
+module.exports = { RouteCOrchestrator, nextAction, MAX_ROUTE_C_ETH, MAX_ROUTE_C_USDT, DEFAULT_SLIPPAGE_BPS };

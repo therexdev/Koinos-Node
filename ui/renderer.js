@@ -1225,9 +1225,28 @@ function renderFundView() {
       <div class="row spread"><h2 style="margin:0">🌉 Bridge &amp; swap to KOIN</h2><span class="pill warn">beta</span></div>
       <div class="banner warn" style="margin-top:8px">Experimental &amp; mainnet-only. Routes real funds through the Vortex bridge (unaudited) and KoinDX. The pool is shallow — start small (capped at 0.05 ETH per bridge). Mana for the Koinos steps is sponsored, so you don't need any KOIN first.</div>
       <div id="fund-bridge-body"><p class="muted">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2 style="margin:0">↗ Send ETH out</h2>
+      <p class="hint">Withdraw ETH from your funding address to any Ethereum address — an exchange, another wallet, anywhere. Your ETH isn't locked to bridging. Unlock your wallet to send.</p>
+      <label class="field"><span>Recipient Ethereum address</span>
+        <input id="fund-send-to" type="text" class="mono" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Amount (ETH)</span>
+        <div class="row" style="gap:8px">
+          <input id="fund-send-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.01" style="max-width:180px">
+          <button id="fund-send-max" class="btn ghost" style="padding:6px 12px" title="Send your whole ETH balance minus gas">Max</button>
+        </div></label>
+      <div id="fund-send-quote" class="hint" style="min-height:18px;margin-top:6px"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="fund-send-go" class="btn primary">Send ETH</button>
+      </div>
     </div>`;
 
   $("#fund-endpoint-save").addEventListener("click", onSaveOnrampEndpoint);
+  $("#fund-send-to").addEventListener("input", debounceSendQuote);
+  $("#fund-send-amt").addEventListener("input", debounceSendQuote);
+  $("#fund-send-max").addEventListener("click", onSendMax);
+  $("#fund-send-go").addEventListener("click", onSendEth);
   $$("[data-ext]", root).forEach((a) =>
     a.addEventListener("click", (e) => {
       e.preventDefault();
@@ -1477,6 +1496,102 @@ async function onBridgeStart() {
             toast(e.message, "bad", 9000);
           }
           refreshBridge();
+        },
+      },
+    ],
+  });
+}
+
+// ---- withdraw ETH out ----
+let _sendQuoteTimer = null;
+function debounceSendQuote() {
+  clearTimeout(_sendQuoteTimer);
+  _sendQuoteTimer = setTimeout(doSendQuote, 600);
+}
+async function doSendQuote() {
+  const q = document.getElementById("fund-send-quote");
+  const to = document.getElementById("fund-send-to");
+  const amt = document.getElementById("fund-send-amt");
+  if (!q || !to || !amt) return;
+  const v = Number(amt.value);
+  if (!to.value.trim() || !v || v <= 0) { q.textContent = ""; return; }
+  q.textContent = "Estimating…";
+  try {
+    const r = await call("fund:ethSendQuote", { toAddress: to.value.trim(), amountEth: String(v) });
+    const gas = Number(r.gasCostEth || 0).toFixed(5);
+    const total = Number(r.totalEth || 0).toFixed(6);
+    const bal = Number(r.balanceEth || 0).toFixed(6);
+    q.innerHTML = r.sufficient
+      ? `Gas ~${esc(gas)} ETH · total ~${esc(total)} ETH · balance ${esc(bal)} ETH`
+      : `<span style="color:var(--bad)">Not enough ETH: need ~${esc(total)} incl. gas, have ${esc(bal)}.</span>`;
+  } catch (e) {
+    q.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  }
+}
+
+async function onSendMax() {
+  const btn = document.getElementById("fund-send-max");
+  const amt = document.getElementById("fund-send-amt");
+  const to = document.getElementById("fund-send-to");
+  if (!btn || !amt) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const r = await call("fund:ethSendMax", { toAddress: to && to.value.trim() });
+    const max = Math.floor(Number(r.maxEth) * 1e6) / 1e6; // floor to 6 dp so it never exceeds balance − gas
+    if (!(max > 0)) {
+      toast("Not enough ETH (after gas) to send", "bad", 7000);
+      return;
+    }
+    amt.value = String(max);
+    doSendQuote();
+  } catch (e) {
+    toast(e.message, "bad", 8000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function onSendEth() {
+  const to = document.getElementById("fund-send-to");
+  const amt = document.getElementById("fund-send-amt");
+  const dest = to && to.value.trim();
+  const v = Number(amt && amt.value);
+  if (!dest) return toast("Enter a recipient address", "bad");
+  if (!v || v <= 0) return toast("Enter an amount to send", "bad");
+  showModal({
+    title: "Send real ETH?",
+    body: `<p class="small">This sends <b>${esc(String(v))} ETH</b> to<br><span class="mono" style="word-break:break-all">${esc(dest)}</span><br>on Ethereum Mainnet. This is irreversible. Continue?</p>`,
+    actions: [
+      { label: "Cancel", onClick: (c) => c() },
+      {
+        label: "Send it",
+        class: "primary",
+        onClick: async (c) => {
+          c();
+          const btn = document.getElementById("fund-send-go");
+          busyButton(btn, true, "Sending…");
+          try {
+            const r = await call("fund:ethSend", { toAddress: dest, amountEth: String(v) });
+            toast(`Sent — tx ${r.hash.slice(0, 10)}…`, "good", 9000);
+            if (amt) amt.value = "";
+            const q = document.getElementById("fund-send-quote");
+            if (q) {
+              q.innerHTML = `<span class="good">Sent ✓</span> <a href="#" id="fund-send-tx">view on Etherscan ↗</a>`;
+              const link = document.getElementById("fund-send-tx");
+              if (link) link.addEventListener("click", (e) => {
+                e.preventDefault();
+                call("util:openExternal", { url: `https://etherscan.io/tx/${r.hash}` }).catch(() => {});
+              });
+            }
+            loadEthBalance();
+          } catch (e) {
+            toast(e.message, "bad", 9000);
+          } finally {
+            busyButton(btn, false);
+          }
         },
       },
     ],

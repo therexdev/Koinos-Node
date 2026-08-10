@@ -21,6 +21,7 @@ const { parseAmount, formatAmount, subSats, cmpSats } = require("./lib/format");
 const { weiToEth } = require("./lib/eth");
 const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrator");
 const { quoteDeposit, maxBridgeable } = require("./lib/eth-bridge");
+const { quoteSend, maxSendable, sendEth } = require("./lib/eth-send");
 const { quoteSwap } = require("./lib/koindx");
 
 // Shared Coinbase Onramp endpoint + app-identity key (see onramp-endpoint/). At
@@ -582,6 +583,25 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
       swap = { error: String(e.message || e) };
     }
     return { deposit, swap, maxEth: MAX_BRIDGE_ETH };
+  });
+
+  // ----- withdraw ETH out (so ETH parked for bridging isn't trapped) -----
+  handle("fund:ethSendQuote", async ({ toAddress, amountEth } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return quoteSend({ fromAddress: address, toAddress, amountEth });
+  });
+  handle("fund:ethSendMax", async ({ toAddress } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return maxSendable({ fromAddress: address, toAddress });
+  });
+  // REAL ETH MOVES HERE. ethPrivateKey() throws if the wallet is locked, so the
+  // send is gated on an unlocked wallet.
+  handle("fund:ethSend", async ({ toAddress, amountEth } = {}) => {
+    if (!wallet.ethAddress) throw new Error("Create or unlock your wallet first.");
+    const res = await sendEth({ ethPrivHex: wallet.ethPrivateKey(), toAddress, amountEth });
+    return res;
   });
 
   // ----- utilities -----

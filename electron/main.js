@@ -23,6 +23,8 @@ const { BridgeOrchestrator, MAX_BRIDGE_ETH } = require("./lib/bridge-orchestrato
 const { quoteDeposit, maxBridgeable } = require("./lib/eth-bridge");
 const { quoteSend, maxSendable, sendEth } = require("./lib/eth-send");
 const { quoteSwap } = require("./lib/koindx");
+const { quoteEthToVkoin } = require("./lib/eth-swap");
+const { compareRoutes, descriptor } = require("./lib/fund-routes");
 
 // Shared Coinbase Onramp endpoint + app-identity key (see onramp-endpoint/). At
 // module scope so both the IPC handlers and the bridge orchestrator use them.
@@ -583,6 +585,37 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
       swap = { error: String(e.message || e) };
     }
     return { deposit, swap, maxEth: MAX_BRIDGE_ETH };
+  });
+
+  // Compare both funding routes for a given ETH amount and rank by KOIN out, so
+  // the UI can show the best plus the runners-up. Read-only (quotes only).
+  //   Route B: ETH → vETH (Vortex) → KOIN (KoinDX)
+  //   Route C: ETH → USDT → vKOIN (Uniswap v4) → KOIN (Vortex, 1:1)
+  // Route C is quote-only in this build (execution ships next); `executable`
+  // tells the UI which route the Bridge button can actually run today.
+  handle("fund:routeCompare", async ({ amountEth, slippageBps = 150 } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    const network = settings.get("network", "mainnet");
+
+    let routeB;
+    try {
+      const deposit = await quoteDeposit({ fromAddress: address, amountEth, koinosRecipient: wallet.address, network });
+      const swap = await quoteSwap({ amountInSats: deposit.vethSats, slippageBps, network, provider: chain.provider() });
+      routeB = { ...descriptor("B"), executable: true, koinOut: swap.amountOut, koinOutMin: swap.amountOutMin, gasCostEth: deposit.gasCostEth };
+    } catch (e) {
+      routeB = { ...descriptor("B"), executable: true, koinOut: null, error: String(e.message || e) };
+    }
+
+    let routeC;
+    try {
+      const q = await quoteEthToVkoin({ amountEth, slippageBps });
+      routeC = { ...descriptor("C"), executable: false, koinOut: q.koinOut, koinOutMin: q.koinOutMin, usdtOut: q.usdtOut };
+    } catch (e) {
+      routeC = { ...descriptor("C"), executable: false, koinOut: null, error: String(e.message || e) };
+    }
+
+    return { ...compareRoutes([routeB, routeC]), amountEth: String(amountEth), slippageBps };
   });
 
   // ----- withdraw ETH out (so ETH parked for bridging isn't trapped) -----

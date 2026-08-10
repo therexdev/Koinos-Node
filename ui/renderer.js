@@ -1227,6 +1227,16 @@ function renderFundView() {
       <div id="fund-bridge-body"><p class="muted">Loading…</p></div>
     </div>
     <div class="card">
+      <div class="row spread"><h2 style="margin:0">📊 Compare funding routes</h2><span class="pill warn">preview</span></div>
+      <p class="hint">See which path gives the most KOIN for your ETH. <b>Route C</b> swaps to vKOIN on Uniswap and bridges it 1:1 — it taps a much deeper KOIN market, so it usually returns far more KOIN. Its in-app execution ships in the next beta; today the Bridge above runs Route&nbsp;B.</p>
+      <label class="field"><span>Amount (ETH)</span>
+        <div class="row" style="gap:8px">
+          <input id="fund-cmp-amt" type="number" min="0" step="0.001" class="mono" placeholder="0.05" style="max-width:180px">
+          <button id="fund-cmp-go" class="btn">Compare</button>
+        </div></label>
+      <div id="fund-cmp-body" class="hint" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
       <h2 style="margin:0">↗ Send ETH out</h2>
       <p class="hint">Withdraw ETH from your funding address to any Ethereum address — an exchange, another wallet, anywhere. Your ETH isn't locked to bridging. Unlock your wallet to send.</p>
       <label class="field"><span>Recipient Ethereum address</span>
@@ -1243,6 +1253,8 @@ function renderFundView() {
     </div>`;
 
   $("#fund-endpoint-save").addEventListener("click", onSaveOnrampEndpoint);
+  $("#fund-cmp-go").addEventListener("click", onCompareRoutes);
+  $("#fund-cmp-amt").addEventListener("keydown", (e) => { if (e.key === "Enter") onCompareRoutes(); });
   $("#fund-send-to").addEventListener("input", debounceSendQuote);
   $("#fund-send-amt").addEventListener("input", debounceSendQuote);
   $("#fund-send-max").addEventListener("click", onSendMax);
@@ -1500,6 +1512,51 @@ async function onBridgeStart() {
       },
     ],
   });
+}
+
+// ---- compare funding routes ----
+async function onCompareRoutes() {
+  const amt = document.getElementById("fund-cmp-amt");
+  const body = document.getElementById("fund-cmp-body");
+  const btn = document.getElementById("fund-cmp-go");
+  const v = Number(amt && amt.value);
+  if (!v || v <= 0) return toast("Enter an ETH amount to compare", "bad");
+  if (!body) return;
+  busyButton(btn, true, "Quoting…");
+  body.innerHTML = '<span class="muted">Quoting both routes…</span>';
+  try {
+    const r = await call("fund:routeCompare", { amountEth: String(v) });
+    body.innerHTML = renderRouteCompare(r);
+  } catch (e) {
+    body.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  } finally {
+    busyButton(btn, false);
+  }
+}
+
+function renderRouteCompare(r) {
+  const rows = (r.routes || []).map((rt) => {
+    const steps = (rt.steps || []).join(" → ");
+    const preview = rt.executable ? "" : ' <span class="muted small">(preview)</span>';
+    let val;
+    if (rt.koinOut) {
+      const koin = fmtKoin(rt.koinOut);
+      const best = rt.isBest ? ' <span class="good">★ best</span>' : "";
+      const mult = rt.bestMultiple && !rt.isBest ? ` <span class="muted">— best returns ${esc(String(rt.bestMultiple))}× more</span>` : "";
+      val = `<b>${esc(koin)} KOIN</b>${best}${mult}`;
+    } else {
+      val = `<span style="color:var(--bad)">unavailable${rt.error ? ": " + esc(rt.error) : ""}</span>`;
+    }
+    return `<div style="padding:8px 0;border-top:1px solid var(--border)">
+      <div><b>Route ${esc(rt.id)}</b> — ${esc(rt.label)}${preview}</div>
+      <div class="muted small">${esc(steps)}</div>
+      <div style="margin-top:3px">${val}</div>
+    </div>`;
+  }).join("");
+  const hdr = r.best
+    ? `Best for <b>${esc(r.amountEth)} ETH</b>: <b>Route ${esc(r.best.id)}</b> (${esc(fmtKoin(r.best.koinOut))} KOIN)`
+    : '<span style="color:var(--bad)">No route could be quoted right now.</span>';
+  return `<div style="margin-bottom:4px">${hdr}</div>${rows}`;
 }
 
 // ---- withdraw ETH out ----

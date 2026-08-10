@@ -48,6 +48,7 @@ const CHANNELS = new Set([
   "fund:bridgeMax",
   "fund:bridgeAdvance",
   "fund:bridgeReset",
+  "fund:routeCompare",
   "fund:ethSendQuote",
   "fund:ethSendMax",
   "fund:ethSend",

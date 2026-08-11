@@ -24,12 +24,14 @@ const { quoteEthToVkoin, quoteUsdtOut, quoteVkoinOut, applySlippage } = require(
 const swap = require("./eth-swap-exec");
 const { buildTransferTokensTx, bridgePaused } = require("./eth-bridge-token");
 const { parseUsdt, formatUsdt } = require("./usdt-send");
+const { parseVkoin, formatVkoin } = require("./vkoin-send");
 const { BRIDGE } = require("./bridge-constants");
 const RC = require("./route-constants");
 
 // Safety caps — keep Route C amounts small while it's new. Matches Route B.
 const MAX_ROUTE_C_ETH = "0.05";
 const MAX_ROUTE_C_USDT = "150"; // ~ the USD value of the ETH cap, with headroom
+const MAX_ROUTE_C_VKOIN = "50000"; // recovery path; generous but bounded
 const DEFAULT_SLIPPAGE_BPS = 150; // 1.5%
 const PERMIT2_EXPIRY_SEC = 3600;
 const SWAP_DEADLINE_SEC = 1800;
@@ -97,7 +99,7 @@ class RouteCOrchestrator {
   // "usdt" (the user already holds USDT — skip the ETH leg and start at the vKOIN
   // swap). Validates + quotes before anything moves, snapshots starting balances
   // (so post-swap deltas are exact), and persists.
-  async start({ amountEth, amountUsdt, source = "eth", slippageBps = DEFAULT_SLIPPAGE_BPS } = {}) {
+  async start({ amountEth, amountUsdt, amountVkoin, source = "eth", slippageBps = DEFAULT_SLIPPAGE_BPS } = {}) {
     const cur = this.status();
     if (cur && !TERMINAL.has(cur.status)) throw new Error("A Route C funding is already in progress");
     if (!this.wallet.ethAddress) throw new Error("Create or unlock your wallet first");
@@ -133,6 +135,27 @@ class RouteCOrchestrator {
         usdtSats: usdtSats.toString(),
         vkoinBefore,
         estKoinOut: vkoinExpected.toString(),
+      });
+      return this.status();
+    }
+
+    if (source === "vkoin") {
+      // Recovery: vKOIN already sits in the wallet — just bridge + redeem it.
+      const vkoinSats = parseVkoin(amountVkoin);
+      if (vkoinSats <= 0n) throw new Error("Amount must be greater than 0");
+      if (vkoinSats > parseVkoin(MAX_ROUTE_C_VKOIN)) {
+        throw new Error(`Amount ${formatVkoin(vkoinSats)} vKOIN exceeds the safety cap of ${MAX_ROUTE_C_VKOIN} vKOIN`);
+      }
+      const vkoinBal = await swap.balanceOf(this._ethProvider, RC.VKOIN, wallet.address);
+      if (vkoinBal < vkoinSats) throw new Error("Insufficient vKOIN balance for that amount");
+      const ethBal = await this._ethProvider.getBalance(wallet.address);
+      if (ethBal <= 0n) throw new Error("This address needs a little ETH to pay gas for the bridge");
+      this._save({
+        ...common,
+        status: "approve_bridge", // skip both swaps — vKOIN is already in hand
+        amountVkoin: formatVkoin(vkoinSats),
+        vkoinSats: vkoinSats.toString(),
+        estKoinOut: vkoinSats.toString(), // 1:1
       });
       return this.status();
     }
@@ -197,7 +220,10 @@ class RouteCOrchestrator {
   resume() {
     const job = this.status();
     if (!job || job.status !== "error" || !job.failedAt) throw new Error("Nothing to resume");
-    this._save({ ...job, status: job.failedAt, error: null, pendingTx: null });
+    // A redeem failure re-polls for fresh guardian signatures (they may have expired)
+    // before retrying — that path also rebuilds the tx with a current nonce.
+    const back = job.failedAt === "redeeming" ? "awaiting_signatures" : job.failedAt;
+    this._save({ ...job, status: back, error: null, pendingTx: null, redeemAttempts: 0, sigStartedAt: Date.now() });
     return this.status();
   }
 
@@ -317,7 +343,9 @@ class RouteCOrchestrator {
   }
 
   async _redeem(job) {
+    const attempts = (job.redeemAttempts || 0) + 1;
     const sponsorAddress = await fetchSponsorAddress(this.settings);
+    // Build fresh every attempt so koilib re-fetches the account nonce.
     const tx = await buildRedeemTransaction({
       userSigner: this._koinosSigner(),
       record: job.record,
@@ -325,9 +353,27 @@ class RouteCOrchestrator {
       network: this.network,
       provider: this.provider,
     });
-    const res = await coSignAndBroadcast(this.settings, this.appKey, tx);
-    this._save({ ...job, status: "done", redeemId: res.id, koinReceived: job.record.amount, finishedAt: Date.now() });
+    try {
+      const res = await coSignAndBroadcast(this.settings, this.appKey, tx);
+      this._save({ ...job, status: "done", redeemId: res.id, koinReceived: job.record.amount, finishedAt: Date.now() });
+    } catch (e) {
+      const m = String(e.message || e);
+      // The transfer already completed on a prior attempt whose response we lost —
+      // the KOIN is delivered, so this is success, not a failure.
+      if (/already complet|already redeem|already processed|has been completed|already exists/i.test(m)) {
+        this._save({ ...job, status: "done", koinReceived: job.record.amount, finishedAt: Date.now(), redeemNote: "already completed" });
+        return;
+      }
+      // Stale nonce (code -201): this Koinos account was raced by another tx — e.g. a
+      // reward-return — between building and broadcasting. Rebuild with a fresh nonce
+      // next tick. Bounded so a persistent problem still surfaces.
+      if (/invalid transaction nonce|nonce mismatch|\b-201\b/i.test(m) && attempts < 15) {
+        this._save({ ...job, redeemAttempts: attempts });
+        return; // stay in "redeeming"; the driver retries
+      }
+      throw e;
+    }
   }
 }
 
-module.exports = { RouteCOrchestrator, nextAction, MAX_ROUTE_C_ETH, MAX_ROUTE_C_USDT, DEFAULT_SLIPPAGE_BPS };
+module.exports = { RouteCOrchestrator, nextAction, MAX_ROUTE_C_ETH, MAX_ROUTE_C_USDT, MAX_ROUTE_C_VKOIN, DEFAULT_SLIPPAGE_BPS };

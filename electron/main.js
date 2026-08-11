@@ -24,6 +24,7 @@ const { RouteCOrchestrator, MAX_ROUTE_C_ETH } = require("./lib/route-c-orchestra
 const { quoteDeposit, maxBridgeable, makeProvider } = require("./lib/eth-bridge");
 const { quoteSend, maxSendable, sendEth } = require("./lib/eth-send");
 const { usdtBalance, quoteUsdtSend, maxUsdtSendable, sendUsdt } = require("./lib/usdt-send");
+const { vkoinBalance, quoteVkoinSend, maxVkoinSendable, sendVkoin } = require("./lib/vkoin-send");
 const { quoteSwap } = require("./lib/koindx");
 const { quoteEthToVkoin, quoteVkoinOut, applySlippage } = require("./lib/eth-swap");
 const { compareRoutes, descriptor } = require("./lib/fund-routes");
@@ -591,8 +592,8 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   handle("fund:routeCReset", () => routeC.reset());
   handle("fund:routeCAdvance", () => routeC.advance());
   handle("fund:routeCResume", () => routeC.resume());
-  handle("fund:routeCStart", async ({ amountEth, amountUsdt, source, slippageBps } = {}) => {
-    const job = await routeC.start({ amountEth, amountUsdt, source, slippageBps });
+  handle("fund:routeCStart", async ({ amountEth, amountUsdt, amountVkoin, source, slippageBps } = {}) => {
+    const job = await routeC.start({ amountEth, amountUsdt, amountVkoin, source, slippageBps });
     routeC.advance().catch(() => {}); // kick the first Ethereum tx immediately
     return job;
   });
@@ -675,8 +676,20 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     const address = wallet.ethAddress;
     if (!address) throw new Error("Create or unlock your wallet first.");
     const provider = await makeProvider();
-    const [ethWei, usdt] = await Promise.all([provider.getBalance(address), usdtBalance({ address, provider })]);
-    return { address, ethWei: ethWei.toString(), eth: weiToEth("0x" + ethWei.toString(16)), usdtSats: usdt.sats, usdt: usdt.usdt };
+    const [ethWei, usdt, vkoin] = await Promise.all([
+      provider.getBalance(address),
+      usdtBalance({ address, provider }),
+      vkoinBalance({ address, provider }),
+    ]);
+    return {
+      address,
+      ethWei: ethWei.toString(),
+      eth: weiToEth("0x" + ethWei.toString(16)),
+      usdtSats: usdt.sats,
+      usdt: usdt.usdt,
+      vkoinSats: vkoin.sats,
+      vkoin: vkoin.vkoin,
+    };
   });
 
   // ----- withdraw / send USDT out -----
@@ -705,6 +718,46 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     if (usdtSats <= 0n) throw new Error("Amount must be greater than 0");
     const koin = await quoteVkoinOut({ usdtSats, provider });
     return { amountUsdt: String(amountUsdt), koinOut: koin.toString(), koinOutMin: applySlippage(koin, slippageBps).toString(), slippageBps };
+  });
+
+  // ----- send vKOIN out / bridge-to-KOIN recovery -----
+  handle("fund:vkoinSendQuote", async ({ toAddress, amountVkoin } = {}) => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return quoteVkoinSend({ fromAddress: address, toAddress, amountVkoin });
+  });
+  handle("fund:vkoinSendMax", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    return maxVkoinSendable({ fromAddress: address });
+  });
+  handle("fund:vkoinSend", async ({ toAddress, amountVkoin } = {}) => {
+    if (!wallet.ethAddress) throw new Error("Create or unlock your wallet first.");
+    return sendVkoin({ ethPrivHex: wallet.ethPrivateKey(), toAddress, amountVkoin });
+  });
+
+  // ----- gas-aware Max for ETH funding: balance minus a Route-C gas reserve -----
+  // Route C sends up to ~6 txs (swaps + approvals + bridge); reserve enough ETH so
+  // the run can't stall out of gas mid-flow, and flag if the balance can't cover it.
+  handle("fund:routeMaxEth", async () => {
+    const address = wallet.ethAddress;
+    if (!address) throw new Error("Create or unlock your wallet first.");
+    const provider = await makeProvider();
+    const balance = await provider.getBalance(address);
+    const fee = await provider.getFeeData();
+    const perGas = fee.maxFeePerGas ?? fee.gasPrice ?? 0n;
+    const ROUTE_C_GAS = 750000n; // ETH→USDT + 2 approvals + USDT→vKOIN + approve + bridge
+    const gasReserve = (perGas * ROUTE_C_GAS * 13n) / 10n; // +30% headroom
+    let maxWei = balance > gasReserve ? balance - gasReserve : 0n;
+    const capWei = 50000000000000000n; // 0.05 ETH
+    if (maxWei > capWei) maxWei = capWei;
+    return {
+      maxWei: maxWei.toString(),
+      maxEth: weiToEth("0x" + maxWei.toString(16)),
+      gasReserveEth: weiToEth("0x" + gasReserve.toString(16)),
+      balanceEth: weiToEth("0x" + balance.toString(16)),
+      enoughForGas: balance > gasReserve,
+    };
   });
 
   // ----- utilities -----

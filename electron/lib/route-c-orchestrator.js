@@ -364,10 +364,12 @@ class RouteCOrchestrator {
         this._save({ ...job, status: "done", koinReceived: job.record.amount, finishedAt: Date.now(), redeemNote: "already completed" });
         return;
       }
-      // Stale nonce (code -201): this Koinos account was raced by another tx — e.g. a
-      // reward-return — between building and broadcasting. Rebuild with a fresh nonce
-      // next tick. Bounded so a persistent problem still surfaces.
-      if (/invalid transaction nonce|nonce mismatch|\b-201\b/i.test(m) && attempts < 15) {
+      // Retryable: a stale nonce (the account was raced by another tx, e.g. a reward
+      // return), OR a transient relayer/RPC hiccup (deadline exceeded, internal server
+      // error, 5xx, rate limit). Both often mean the tx may not have applied — rebuild
+      // with a fresh nonce next tick. Bounded so a persistent problem still surfaces.
+      const retryable = /invalid transaction nonce|nonce mismatch|\b-201\b|context deadline|deadline exceeded|internal server error|rpc failed|timeout|timed out|ECONN|connection reset|temporarily unavailable|service unavailable|too many requests|\b(429|500|502|503|504)\b/i;
+      if (retryable.test(m) && attempts < 15) {
         this._save({ ...job, redeemAttempts: attempts });
         return; // stay in "redeeming"; the driver retries
       }

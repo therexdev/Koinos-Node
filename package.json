@@ -1,7 +1,7 @@
 {
   "name": "koinos-node-desktop",
   "productName": "Koinos Node Desktop",
-  "version": "0.4.1-beta.1",
+  "version": "0.4.1",
   "description": "Desktop app to create a Koinos wallet, burn KOIN to VHP, and run a block-producing Koinos node with automatic reward returns",
   "main": "electron/main.js",
   "private": true,

@@ -165,7 +165,7 @@ if (!gotLock) {
       }
     }, 8000);
 
-    registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData });
+    registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData });
     createWindow();
     setupAutoUpdates();
 
@@ -223,7 +223,7 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData }) {
+function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
@@ -421,10 +421,15 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
     const networkId = chain.network().id;
     // One-time, best-effort: right-size the WSL VM so the node has enough memory
     // to begin with. Self-skips off Windows; writes .wslconfig only when it would
-    // raise a too-low limit, and never blocks the start if anything goes wrong.
-    if (!state.get("node.memoryTuned", false)) {
-      await setup.optimizeWslMemory().catch(() => {});
-      state.set("node.memoryTuned", true);
+    // raise a too-low limit. Fully guarded — tuning must NEVER block starting the
+    // node, whatever goes wrong here.
+    try {
+      if (!state.get("node.memoryTuned", false)) {
+        await setup.optimizeWslMemory().catch(() => {});
+        state.set("node.memoryTuned", true);
+      }
+    } catch {
+      /* tuning is best-effort; starting the node always wins */
     }
     let producerAddress = null;
     if (produce) {

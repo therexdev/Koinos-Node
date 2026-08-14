@@ -165,6 +165,11 @@ async function refreshNode() {
   } catch {
     S.producer = null;
   }
+  // VHP/KOIN balances are public on-chain data read from your address, so they
+  // load while the wallet is LOCKED. Refresh them here (25s-cached, so it's
+  // cheap) so the block-production checklist shows your real VHP without needing
+  // an unlock — the node produces blocks whether or not the app is unlocked.
+  await refreshBalances().catch(() => {});
   patchNodeView();
 }
 
@@ -1458,18 +1463,32 @@ function patchNodeView() {
   const p = S.producer;
   const checklist = $("#n-checklist");
   if (checklist) {
-    const vhpOk = S.balances && !S.balances.error && BigInt(S.balances.vhp ?? "0") > 0n;
+    // VHP is public on-chain stake read from your address — it loads while the
+    // wallet is LOCKED. Distinguish "still checking" from a real zero so the list
+    // never claims you have no VHP when it simply hasn't looked yet (the node
+    // produces blocks whether or not the app wallet is unlocked).
+    const balLoaded = S.balances && !S.balances.error;
+    const hasVhp = balLoaded && BigInt(S.balances.vhp ?? "0") > 0n;
+    const vhpState = hasVhp ? "ok" : balLoaded ? "empty" : "pending";
+    const st = (ok) => (ok ? "ok" : "empty");
     const items = [
-      [S.wallet?.exists, "Wallet created", "Create one in the Wallet tab."],
-      [vhpOk, "VHP in wallet", `Burn some ${sym()} in the Burn tab — VHP is your block-producing stake.`],
-      [n?.isRunning, "Node running", "Start the node above."],
-      [!!p?.filePublicKey, "Signing key generated", "Generated automatically by the node on first start."],
-      [!!p?.matches, "Signing key registered on chain", "Register it with the button below (needs unlocked wallet + mana)."],
+      [st(S.wallet?.exists), "Wallet created", "Create one in the Wallet tab."],
+      [
+        vhpState,
+        "VHP staked at your address",
+        vhpState === "pending"
+          ? "Checking your VHP… no need to unlock — it's read from your public address."
+          : `Burn some ${sym()} in the Burn tab — VHP is your block-producing stake.`,
+      ],
+      [st(n?.isRunning), "Node running", "Start the node above."],
+      [st(!!p?.filePublicKey), "Signing key generated", "Generated automatically by the node on first start."],
+      [st(!!p?.matches), "Signing key registered on chain", "Register it with the button below (needs unlocked wallet + mana)."],
     ];
+    const tickFor = (s) => (s === "ok" ? "✅" : s === "pending" ? "⏳" : "⬜");
     checklist.innerHTML = items
       .map(
-        ([ok, label, hint]) => `<li><span class="tick">${ok ? "✅" : "⬜"}</span>
-          <span>${esc(label)}${ok ? "" : `<br><span class="muted small">${esc(hint)}</span>`}</span></li>`
+        ([state, label, hint]) => `<li><span class="tick">${tickFor(state)}</span>
+          <span>${esc(label)}${state === "ok" ? "" : `<br><span class="muted small">${esc(hint)}</span>`}</span></li>`
       )
       .join("");
     const reg = $("#n-register");

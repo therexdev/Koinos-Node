@@ -1030,7 +1030,12 @@ function renderNodeView() {
     <div class="grid-2">
       <div class="card">
         <h2>📡 Status <span id="n-run-pill"></span></h2>
+        <div id="n-health" class="stack"></div>
         <div id="n-sync" class="stack"></div>
+        <label class="row small" style="gap:8px;margin-top:10px;cursor:pointer">
+          <input type="checkbox" id="n-autorecover" checked>
+          <span>Keep my node running automatically <span class="muted">— the app restarts it for you if it ever stops.</span></span>
+        </label>
         <div style="margin-top:10px"><table id="n-services"><tbody></tbody></table></div>
       </div>
       <div class="card">
@@ -1062,6 +1067,14 @@ function renderNodeView() {
   $("#n-start").addEventListener("click", onStartNode);
   $("#n-stop").addEventListener("click", onStopNode);
   $("#n-register").addEventListener("click", onRegisterKey);
+  $("#n-autorecover").addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    await call("node:setAutoRecover", { on }).catch(() => {});
+    toast(
+      on ? "The app will keep your node running automatically." : "Automatic restart is off — you'll restart the node yourself.",
+      on ? "good" : "warn"
+    );
+  });
   $("#n-log-refresh").addEventListener("click", loadLogs);
   const qsBtn = $("#n-quicksync");
   if (S.appInfo.settings.network === "mainnet") {
@@ -1387,6 +1400,28 @@ function patchNodeView() {
   if (pill) {
     pill.className = "pill " + (n?.isRunning ? "good" : "warn");
     pill.textContent = n?.isRunning ? `running (${n.runningCount} services)` : "stopped";
+  }
+
+  // friendly, jargon-free health line + auto-recover toggle state
+  const autoBox = $("#n-autorecover");
+  if (autoBox && n?.autoRecover != null) autoBox.checked = n.autoRecover !== false;
+  const healthEl = $("#n-health");
+  if (healthEl) {
+    const h = n?.health;
+    const recovered = h?.recoveries ? ` <span class="muted small">(recovered ${h.recoveries}× recently)</span>` : "";
+    if (!n?.isRunning) {
+      healthEl.innerHTML = "";
+    } else if (h?.recovering) {
+      healthEl.innerHTML = `<div class="banner info"><span class="spin"></span> Getting your node back up — this takes a minute. You don't need to do anything.</div>`;
+    } else if (h?.memorySaver) {
+      healthEl.innerHTML = `<div class="banner warn">Running in memory-saver mode to stay stable on this PC — your node is up and earning.${recovered}</div>`;
+    } else if (h && h.ok === false) {
+      healthEl.innerHTML = `<div class="banner warn">Your node needs attention — the app is taking care of it.</div>`;
+    } else if (h) {
+      healthEl.innerHTML = `<div class="banner good">✓ Your node is running and healthy.${recovered}</div>`;
+    } else {
+      healthEl.innerHTML = "";
+    }
   }
   const tbody = $("#n-services tbody");
   if (tbody) {

@@ -7,20 +7,35 @@ const { execFile, spawn } = require("child_process");
 const { NETWORKS } = require("./constants");
 const { parseSha256File, analyzeMembers, requiredSpace, fmtBytes } = require("./quicksync-utils");
 const { httpHead, httpGetText, httpDownload } = require("./download");
+const { assessHealth, describeRecovery } = require("./node-health");
 
 const OP_LOG_LIMIT = 400;
 const ARCHIVE_NAME = "koinos-backup.tar.gz";
+
+// ----- self-healing watchdog tuning -----
+const WATCH_INTERVAL_MS = 45 * 1000; // how often we check the node's pulse
+const WATCH_GRACE_MS = 2 * 60 * 1000; // ignore the first 2 min after start / a recovery (startup + resync)
+const STALL_MS = 8 * 60 * 1000; // head height flat this long => chain wedged
+const RECOVERY_WINDOW_MS = 30 * 60 * 1000; // window for counting recent auto-recoveries
+const SAVER_AFTER_OOM = 2; // OOM-driven recoveries before switching to memory-saver
+const CHRONIC_AFTER = 5; // recoveries in the window before we suggest the cloud
+const MAX_BACKOFF_MS = 15 * 60 * 1000;
 
 // Manages a per-network Koinos node directory containing the official
 // docker-compose.yml plus generated .env and config files, and drives it
 // through `docker compose`.
 class NodeManager {
-  constructor({ templateRoot, dataRoot, onEvent }) {
+  constructor({ templateRoot, dataRoot, onEvent, autoRecover = true, probeHead = null }) {
     this.templateRoot = templateRoot;
     this.dataRoot = dataRoot;
     this.onEvent = onEvent || (() => {});
     this._composeCmd = null;
     this._op = null; // { name, network, running, startedAt, lines, code, error }
+    // Self-healing: keep the node alive without the user ever touching Docker.
+    this.autoRecover = autoRecover !== false;
+    this.probeHead = probeHead; // async () => number|null  (local chain head height)
+    this._desiredRunning = false; // is the node meant to be up right now?
+    this._watch = null; // live watchdog state while the node runs
   }
 
   dirs(networkId) {
@@ -35,7 +50,7 @@ class NodeManager {
 
   // ---------- file generation ----------
 
-  ensureFiles(networkId, producerAddress) {
+  ensureFiles(networkId, producerAddress, opts = {}) {
     const net = NETWORKS[networkId];
     if (!net) throw new Error(`Unknown network: ${networkId}`);
     const d = this.dirs(networkId);
@@ -49,7 +64,7 @@ class NodeManager {
     fs.copyFileSync(tpl(net.templateDir, "genesis_data.json"), path.join(d.config, "genesis_data.json"));
 
     fs.writeFileSync(path.join(d.config, "config.yml"), buildConfigYml(net, producerAddress));
-    fs.writeFileSync(path.join(d.root, ".env"), buildEnv(net, d.basedir, !!producerAddress));
+    fs.writeFileSync(path.join(d.root, ".env"), buildEnv(net, d.basedir, !!producerAddress, opts.memorySaver));
     return d;
   }
 
@@ -200,16 +215,169 @@ class NodeManager {
 
   // producerAddress null -> sync-only node (no block_producer service).
   async start(networkId, producerAddress) {
-    this.ensureFiles(networkId, producerAddress);
+    const memorySaver = this._watch?.memorySaver || false;
+    this.ensureFiles(networkId, producerAddress, { memorySaver });
+    this._desiredRunning = true;
     // Fire and forget; callers poll status() / currentOp().
     this._composeOp(networkId, "start", ["up", "-d", "--remove-orphans"]);
+    this._startWatchdog(networkId, !!producerAddress, producerAddress || null, memorySaver);
     return { started: true };
   }
 
   async stop(networkId) {
+    this._desiredRunning = false;
+    this._stopWatchdog();
     if (!this.filesReady(networkId)) return { stopped: true, note: "Node was never started" };
     this._composeOp(networkId, "stop", ["down"]);
     return { stopping: true };
+  }
+
+  // ---------- self-healing watchdog ----------
+  //
+  // While the node is meant to be up, poll its pulse every WATCH_INTERVAL_MS. If
+  // a core service is crash-looping (e.g. block_store OOM-killed) or the chain
+  // wedges, restart the whole stack automatically and tell the user in one plain
+  // sentence. Repeated low-memory crashes flip on memory-saver mode (a lighter
+  // footprint) so it stops happening. The user never runs a command.
+
+  setAutoRecover(on) {
+    this.autoRecover = !!on;
+    return this.autoRecover;
+  }
+
+  _startWatchdog(networkId, producing, producerAddress, memorySaver) {
+    this._stopWatchdog();
+    const now = Date.now();
+    const w = {
+      networkId,
+      producing: !!producing,
+      producerAddress: producerAddress || null,
+      memorySaver: !!memorySaver,
+      lastHeight: null,
+      lastHeightAt: now,
+      graceUntil: now + WATCH_GRACE_MS,
+      recoveries: [], // timestamps of recent auto-recoveries
+      oomHits: 0,
+      recovering: false,
+      warnedChronic: false,
+      health: { ok: true, reason: "starting" },
+      timer: null,
+    };
+    w.timer = setInterval(() => this._watchTick().catch(() => {}), WATCH_INTERVAL_MS);
+    if (w.timer.unref) w.timer.unref();
+    this._watch = w;
+  }
+
+  _stopWatchdog() {
+    if (this._watch?.timer) clearInterval(this._watch.timer);
+    this._watch = null;
+  }
+
+  async _watchTick() {
+    const w = this._watch;
+    if (!w || w.recovering || !this._desiredRunning) return;
+    if (this._op?.running) return; // a start/stop/quick-sync is already driving the stack
+
+    const services = await this.services(w.networkId).catch(() => []);
+    let headHeight = null;
+    if (this.probeHead) headHeight = await this.probeHead().catch(() => null);
+
+    const now = Date.now();
+    if (headHeight != null && (w.lastHeight == null || Number(headHeight) > Number(w.lastHeight))) {
+      w.lastHeight = headHeight;
+      w.lastHeightAt = now;
+    }
+    // Grace window: don't judge a node that's still starting up or resyncing.
+    if (now < w.graceUntil) {
+      w.health = { ok: true, reason: "starting" };
+      return;
+    }
+
+    const health = assessHealth({
+      services,
+      producing: w.producing,
+      headHeight,
+      lastHeight: w.lastHeight,
+      lastHeightAt: w.lastHeightAt,
+      now,
+      stallMs: STALL_MS,
+    });
+    w.health = health;
+    if (!health.ok && health.reason !== "no-data" && this.autoRecover) {
+      await this._recover(w, health);
+    }
+  }
+
+  async _recover(w, health) {
+    if (!this._desiredRunning || this._watch !== w) return;
+    w.recovering = true;
+
+    const now = Date.now();
+    w.recoveries = w.recoveries.filter((t) => now - t < RECOVERY_WINDOW_MS);
+    const recent = w.recoveries.length;
+
+    // Repeated low-memory crashes -> switch to a lighter footprint for good.
+    let switchedSaver = false;
+    if ((health.oom || health.reason === "oom") && !w.memorySaver) {
+      w.oomHits += 1;
+      if (w.oomHits >= SAVER_AFTER_OOM) {
+        w.memorySaver = true;
+        switchedSaver = true;
+      }
+    }
+
+    this.onEvent({
+      type: "node",
+      message: switchedSaver
+        ? "Your PC was running low on memory, so the app switched your node to a lighter mode and is restarting it. It'll keep running on its own."
+        : `${describeRecovery(health.reason, health.oom)} Restarting it for you — you don't need to do anything.`,
+    });
+
+    try {
+      const ok = await this._restartStack(w);
+      if (ok) {
+        w.recoveries.push(Date.now());
+        this.onEvent({ type: "node", message: "Your node is back up and running." });
+      }
+    } catch (e) {
+      this.onEvent({
+        type: "node",
+        level: "error",
+        message: "The app couldn't restart your node just now — it will try again in a minute.",
+      });
+    }
+
+    // Chronic trouble even after memory-saver: point at the cloud, once.
+    w.recoveries = w.recoveries.filter((t) => Date.now() - t < RECOVERY_WINDOW_MS);
+    if (w.recoveries.length >= CHRONIC_AFTER && !w.warnedChronic) {
+      w.warnedChronic = true;
+      this.onEvent({
+        type: "node",
+        level: "warn",
+        message:
+          "Your node keeps running low on resources on this PC. The app will keep restarting it for you, but for reliable 24/7 uptime you may want to run it in the cloud.",
+      });
+    }
+
+    // Back off (grows with how often we've had to step in) so we never thrash,
+    // and give the fresh stack time to resync before judging it again.
+    const backoff = Math.min(MAX_BACKOFF_MS, WATCH_GRACE_MS * 2 ** Math.min(recent, 3));
+    w.lastHeight = null;
+    w.lastHeightAt = Date.now();
+    w.graceUntil = Date.now() + backoff;
+    w.recovering = false;
+  }
+
+  // Full-stack restart used by the watchdog. Regenerates .env (so memory-saver
+  // profiles take effect) and cycles compose down/up. Guards against a user Stop
+  // landing mid-recovery.
+  async _restartStack(w) {
+    this.ensureFiles(w.networkId, w.producerAddress, { memorySaver: w.memorySaver });
+    await this._compose(w.networkId, ["down", "--remove-orphans"], { timeout: 180000 });
+    if (this._watch !== w || !this._desiredRunning) return false;
+    const up = await this._compose(w.networkId, ["up", "-d", "--remove-orphans"], { timeout: 300000 });
+    if (!up.ok) throw new Error(up.error || up.stderr?.slice(-200) || "compose up failed");
+    return true;
   }
 
   currentOp() {
@@ -267,6 +435,10 @@ class NodeManager {
     if (this._op?.running) {
       throw new Error(`Another node operation ("${this._op.name}") is still running`);
     }
+    // Quick sync stops the node and leaves it stopped; stand the watchdog down so
+    // it doesn't fight the restore.
+    this._desiredRunning = false;
+    this._stopWatchdog();
     const op = {
       name: "quick-sync",
       network: networkId,
@@ -453,6 +625,7 @@ class NodeManager {
     const docker = await this.dockerInfo();
     const services = docker.ok ? await this.services(networkId) : [];
     const running = services.filter((s) => /running|up/i.test(s.state)).length;
+    const w = this._watch;
     return {
       docker,
       filesReady: this.filesReady(networkId),
@@ -462,6 +635,18 @@ class NodeManager {
       producerPublicKey: this.readProducerPublicKey(networkId),
       op: this.currentOp(),
       dataDir: this.dirs(networkId).root,
+      autoRecover: this.autoRecover,
+      memorySaver: w?.memorySaver || false,
+      health: w
+        ? {
+            ok: w.health?.ok !== false,
+            reason: w.health?.reason || null,
+            recovering: !!w.recovering,
+            memorySaver: !!w.memorySaver,
+            recoveries: w.recoveries?.length || 0,
+            lastRecoveryAt: w.recoveries?.length ? w.recoveries[w.recoveries.length - 1] : null,
+          }
+        : null,
     };
   }
 }
@@ -535,8 +720,17 @@ function parseComposePs(stdout) {
   return rows;
 }
 
-function buildEnv(net, basedirAbs, producing) {
-  const profiles = producing ? "jsonrpc,block_producer" : "jsonrpc";
+function buildEnv(net, basedirAbs, producing, memorySaver) {
+  // Memory-saver drops the optional API tier (jsonrpc/grpc/rest/…) so a
+  // low-memory PC only runs the core services (+ the block producer if minting),
+  // which is what keeps a small machine from running out of memory.
+  const profiles = memorySaver
+    ? producing
+      ? "block_producer"
+      : ""
+    : producing
+    ? "jsonrpc,block_producer"
+    : "jsonrpc";
   const lines = [
     "# Generated by Koinos Node Desktop — regenerated on every node start.",
     `BASEDIR=${basedirAbs}`,

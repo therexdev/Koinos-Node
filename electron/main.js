@@ -111,6 +111,13 @@ if (!gotLock) {
       templateRoot: path.join(__dirname, "..", "node-template"),
       dataRoot: path.join(userData, "node"),
       onEvent: sendEvent,
+      autoRecover: settings.get("node.autoRecover", true),
+      // Lets the watchdog notice a wedged chain: report the local head height.
+      probeHead: async () => {
+        const s = await chain.syncStatus().catch(() => null);
+        const h = s?.local?.height;
+        return h != null ? Number(h) : null;
+      },
     });
     const setup = new SetupService({
       platform: FORCED_PLATFORM || process.platform,
@@ -412,6 +419,13 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
 
   handle("node:start", async ({ produce }) => {
     const networkId = chain.network().id;
+    // One-time, best-effort: right-size the WSL VM so the node has enough memory
+    // to begin with. Self-skips off Windows; writes .wslconfig only when it would
+    // raise a too-low limit, and never blocks the start if anything goes wrong.
+    if (!state.get("node.memoryTuned", false)) {
+      await setup.optimizeWslMemory().catch(() => {});
+      state.set("node.memoryTuned", true);
+    }
     let producerAddress = null;
     if (produce) {
       producerAddress = wallet.address;
@@ -421,6 +435,11 @@ function registerIpc({ settings, wallet, chain, nodeMgr, setup, rewards, stats, 
   });
 
   handle("node:stop", () => nodeMgr.stop(chain.network().id));
+  handle("node:setAutoRecover", ({ on }) => {
+    settings.set("node.autoRecover", !!on);
+    nodeMgr.setAutoRecover(!!on);
+    return { autoRecover: !!on };
+  });
   handle("node:logs", ({ service, tail }) => nodeMgr.logs(chain.network().id, service, tail));
   handle("node:quickSyncInfo", () => nodeMgr.quickSyncInfo(chain.network().id));
   handle("node:quickSync", () => nodeMgr.quickSync(chain.network().id));

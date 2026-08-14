@@ -22,6 +22,7 @@ const CHANNELS = new Set([
   "node:status",
   "node:start",
   "node:stop",
+  "node:setAutoRecover",
   "node:logs",
   "node:quickSyncInfo",
   "node:quickSync",

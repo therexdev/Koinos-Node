@@ -123,6 +123,9 @@ const NETWORKS = {
 const DEFAULT_SETTINGS = {
   network: "mainnet",
   customRpc: {},          // { [networkId]: "https://..." }
+  node: {
+    autoRecover: true,    // self-heal: auto-restart the node if it stalls/crashes
+  },
   rewards: {
     enabled: false,
     pct: 50,              // percent of detected rewards to return

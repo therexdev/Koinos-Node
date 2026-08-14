@@ -1,10 +1,12 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
 const { httpDownload } = require("./download");
 const { computeSetupPlan, dockerAsset, DOCKER_DOCS, WSL_INSTALL_ARGS } = require("./setup-plan");
+const { recommendWslMemory, mergeWslConfig } = require("./node-health");
 
 // Windows console tools like wsl.exe emit UTF-16LE. Decoding those bytes as
 // UTF-8 (Node's default) leaves a NUL between every character — so a naive
@@ -350,6 +352,43 @@ class SetupService {
 
   dockerDocsUrl() {
     return DOCKER_DOCS[this.platform] || DOCKER_DOCS.linux;
+  }
+
+  // Right-size the WSL 2 VM so the Koinos node has enough memory and doesn't get
+  // OOM-killed. On Windows, WSL's memory is governed by C:\Users\<you>\.wslconfig
+  // (Docker Desktop's WSL backend reads it). We merge sane memory/swap values in —
+  // raising only, never lowering a value the user chose — back up any existing
+  // file, and let it take effect on the next Docker/WSL restart. No-op elsewhere.
+  async optimizeWslMemory({ totalBytes } = {}) {
+    if (this.platform !== "win32") return { changed: false, skipped: "not-windows" };
+    let cfgPath;
+    try {
+      const rec = recommendWslMemory(totalBytes ?? os.totalmem());
+      cfgPath = path.join(os.homedir(), ".wslconfig");
+      let existing = "";
+      try {
+        existing = fs.readFileSync(cfgPath, "utf8");
+      } catch {
+        /* no existing config */
+      }
+      const merged = mergeWslConfig(existing, rec);
+      if (!merged.changed) return { changed: false, memoryGB: rec.memoryGB, path: cfgPath };
+      if (existing) {
+        try {
+          fs.writeFileSync(`${cfgPath}.koinos.bak`, existing);
+        } catch {
+          /* backup is best-effort */
+        }
+      }
+      fs.writeFileSync(cfgPath, merged.text);
+      this.onEvent({
+        type: "setup",
+        message: `Tuned your PC to give the node enough memory (${rec.memoryGB} GB). It takes effect the next time Docker or your PC restarts.`,
+      });
+      return { changed: true, memoryGB: rec.memoryGB, path: cfgPath };
+    } catch (e) {
+      return { changed: false, error: String(e?.message ?? e), path: cfgPath };
+    }
   }
 }
 

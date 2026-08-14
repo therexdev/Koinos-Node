@@ -121,6 +121,19 @@ extracted copy + your previous data); delete the `previous-*` rollback folder
 once the node runs fine. After it completes, press **Start node** — it syncs
 the remaining days-worth of blocks in minutes-to-hours. Mainnet only.
 
+### Stays running on its own
+
+You should never have to babysit the node. While it's running, the app quietly
+watches its pulse and, if a piece crashes or the chain gets stuck (most often a
+low-memory PC running out of room), **it restarts the node for you within a
+minute** — you just see one plain line like *"Your node is back up and running."*
+No Docker commands, no logs to read. On Windows it also right-sizes how much
+memory the node is allowed to use during first start, so it's far less likely to
+happen in the first place; and if a PC keeps running low, the app switches the
+node to a lighter **memory-saver mode** automatically. You can turn the
+auto-restart off with the *Keep my node running automatically* switch on the
+Node tab, but it's on by default.
+
 ## How reward returns work
 
 - Rewards are read from your node's **actual on-chain block-reward events** (the KOIN minted to you when you produce a block) — the exact same figure shown on the Dashboard. Deposits, transfers, and manual burns are **never** mistaken for rewards.

@@ -1414,7 +1414,14 @@ function patchNodeView() {
   if (healthEl) {
     const h = n?.health;
     const recovered = h?.recoveries ? ` <span class="muted small">(recovered ${h.recoveries}× recently)</span>` : "";
-    if (!n?.isRunning) {
+    if (h?.needsRepair) {
+      // Corrupted block data — a restart can't fix it. Offer the one-click rebuild.
+      healthEl.innerHTML = `<div class="banner bad">
+        <b>Your node's block data got corrupted.</b> Restarting won't fix it — it needs to be rebuilt from a verified snapshot. Your wallet, keys and settings are safe, and it takes a few minutes.
+        <div style="margin-top:8px"><button id="n-repair" class="btn primary" style="padding:6px 12px">🔧 Repair node data</button></div>
+      </div>`;
+      $("#n-repair")?.addEventListener("click", onQuickSync);
+    } else if (!n?.isRunning) {
       healthEl.innerHTML = "";
     } else if (h?.recovering) {
       healthEl.innerHTML = `<div class="banner info"><span class="spin"></span> Getting your node back up — this takes a minute. You don't need to do anything.</div>`;

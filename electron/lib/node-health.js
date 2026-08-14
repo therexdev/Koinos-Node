@@ -185,6 +185,36 @@ function mergeWslConfig(existing, { memoryGB, swapGB }) {
   return { text, changed, memoryGB: want.memory, swapGB: want.swap };
 }
 
+// Classify a crash from a service's recent log text so the app can pick the
+// RIGHT remedy instead of blindly restarting. Some failures a restart fixes;
+// a code panic or on-disk corruption it never will — that data must be rebuilt.
+//   "oom"        -> killed for memory (restart + lighten footprint / more RAM)
+//   "panic"      -> segfault / nil-pointer / Go panic (deterministic — rebuild data)
+//   "corruption" -> the database won't open cleanly (rebuild data)
+//   null         -> nothing recognizable (treat as transient)
+function classifyCrash(logText) {
+  const t = String(logText || "");
+  if (/\(137\)|signal:\s*killed|out of memory|cannot allocate memory|oom[-\s]?kill/i.test(t)) return "oom";
+  if (/panic:|sigsegv|segmentation violation|nil pointer|invalid memory address|runtime error/i.test(t)) return "panic";
+  if (/corruption|checksum mismatch|bad table|truncated|malformed|failed to open (the )?database/i.test(t))
+    return "corruption";
+  return null;
+}
+
+// The remedy a crash class calls for: "memory" (restart/lighten), "repair"
+// (rebuild block data via Quick Sync), or null (just restart).
+function crashRemedy(kind) {
+  if (kind === "oom") return "memory";
+  if (kind === "panic" || kind === "corruption") return "repair";
+  return null;
+}
+
+// How many times a panic must appear in the recent log tail before we treat the
+// crash as a deterministic loop (vs. a one-off) and escalate to repair.
+function isCrashLooping(logText, threshold = 2) {
+  return (String(logText || "").match(/panic:/gi) || []).length >= threshold;
+}
+
 module.exports = {
   CORE_SERVICES,
   coreServicesFor,
@@ -194,4 +224,7 @@ module.exports = {
   recommendWslMemory,
   parseSizeGB,
   mergeWslConfig,
+  classifyCrash,
+  crashRemedy,
+  isCrashLooping,
 };

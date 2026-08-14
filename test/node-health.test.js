@@ -9,7 +9,20 @@ const {
   recommendWslMemory,
   parseSizeGB,
   mergeWslConfig,
+  classifyCrash,
+  crashRemedy,
+  isCrashLooping,
 } = require("../electron/lib/node-health");
+
+// A real block_store crash tail (segfault in GetBlocksByHeight, seen looping).
+const PANIC_LOG = `
+block_store-1 | [koinos-mq-golang] Request handler connected
+block_store-1 | panic: runtime error: invalid memory address or nil pointer dereference
+block_store-1 | [signal SIGSEGV: segmentation violation code=0x1 addr=0x40 pc=0x91eae0]
+block_store-1 | github.com/koinos/koinos-block-store/internal/bstore.(*RequestHandler).GetBlocksByHeight(...)
+block_store-1 | Koinos Block Store v1.1.0
+block_store-1 | panic: runtime error: invalid memory address or nil pointer dereference
+`;
 
 const upRow = (service) => ({ service, state: "running", status: "Up 2 hours" });
 const healthySet = (producing = false) =>
@@ -165,4 +178,26 @@ test("mergeWslConfig appends [wsl2] without clobbering an unrelated section", ()
   assert.match(text, /sparseVhd=true/);
   assert.match(text, /\[wsl2\]/);
   assert.match(text, /memory=8GB/);
+});
+
+// ---------- classifyCrash / crashRemedy / isCrashLooping ----------
+
+test("classifyCrash reads a segfault/nil-pointer panic as a panic (not OOM)", () => {
+  assert.equal(classifyCrash(PANIC_LOG), "panic");
+  assert.equal(crashRemedy(classifyCrash(PANIC_LOG)), "repair"); // rebuild data, don't just restart
+});
+
+test("classifyCrash distinguishes OOM, corruption, and benign logs", () => {
+  assert.equal(classifyCrash("container exited (137)"), "oom");
+  assert.equal(crashRemedy("oom"), "memory");
+  assert.equal(classifyCrash("badger: Corruption: checksum mismatch"), "corruption");
+  assert.equal(crashRemedy("corruption"), "repair");
+  assert.equal(classifyCrash("All 2084 tables opened in 7.3s\nRequest handler connected"), null);
+  assert.equal(crashRemedy(null), null);
+});
+
+test("isCrashLooping needs repeated panics, not a single one", () => {
+  assert.equal(isCrashLooping(PANIC_LOG), true); // two panics in the tail
+  assert.equal(isCrashLooping("panic: runtime error: nil pointer"), false); // one-off
+  assert.equal(isCrashLooping("All tables opened; connected"), false);
 });

@@ -7,7 +7,7 @@ const { execFile, spawn } = require("child_process");
 const { NETWORKS } = require("./constants");
 const { parseSha256File, analyzeMembers, requiredSpace, fmtBytes } = require("./quicksync-utils");
 const { httpHead, httpGetText, httpDownload } = require("./download");
-const { assessHealth, describeRecovery } = require("./node-health");
+const { assessHealth, describeRecovery, classifyCrash, isCrashLooping } = require("./node-health");
 
 const OP_LOG_LIMIT = 400;
 const ARCHIVE_NAME = "koinos-backup.tar.gz";
@@ -18,7 +18,8 @@ const WATCH_GRACE_MS = 2 * 60 * 1000; // ignore the first 2 min after start / a 
 const STALL_MS = 8 * 60 * 1000; // head height flat this long => chain wedged
 const RECOVERY_WINDOW_MS = 30 * 60 * 1000; // window for counting recent auto-recoveries
 const SAVER_AFTER_OOM = 2; // OOM-driven recoveries before switching to memory-saver
-const CHRONIC_AFTER = 5; // recoveries in the window before we suggest the cloud
+const CHRONIC_AFTER = 5; // low-memory recoveries in the window before we suggest the cloud
+const REPAIR_AFTER = 3; // restarts that didn't stick before we call for a data repair
 const MAX_BACKOFF_MS = 15 * 60 * 1000;
 
 // Manages a per-network Koinos node directory containing the official
@@ -260,6 +261,8 @@ class NodeManager {
       oomHits: 0,
       recovering: false,
       warnedChronic: false,
+      needsRepair: false, // corrupted block data — a restart can't fix it
+      repairReason: null,
       health: { ok: true, reason: "starting" },
       timer: null,
     };
@@ -303,7 +306,9 @@ class NodeManager {
       stallMs: STALL_MS,
     });
     w.health = health;
-    if (!health.ok && health.reason !== "no-data" && this.autoRecover) {
+    // Once we've concluded the block data is corrupted, stop restarting into the
+    // same wall — wait for the user to repair (Quick Sync).
+    if (!health.ok && health.reason !== "no-data" && this.autoRecover && !w.needsRepair) {
       await this._recover(w, health);
     }
   }
@@ -312,13 +317,45 @@ class NodeManager {
     if (!this._desiredRunning || this._watch !== w) return;
     w.recovering = true;
 
+    // Diagnose the crashing service before blindly restarting. A restart fixes
+    // transient failures and (with memory-saver) low-memory kills — but NOT a
+    // code panic (segfault/nil-pointer) or corrupted on-disk data, which just
+    // reproduce the crash. Those need the block data rebuilt (Quick Sync).
+    let crash = null;
+    let logText = "";
+    try {
+      logText = await this.logs(w.networkId, health.service || "block_store", 80).catch(() => "");
+      crash = classifyCrash(logText);
+    } catch {
+      /* diagnosis is best-effort */
+    }
+
     const now = Date.now();
     w.recoveries = w.recoveries.filter((t) => now - t < RECOVERY_WINDOW_MS);
     const recent = w.recoveries.length;
 
+    const memoryTrouble = crash === "oom" || health.oom || health.reason === "oom";
+    const dataCrash = crash === "panic" || crash === "corruption";
+    const looping = isCrashLooping(logText);
+
+    // Corrupted/panicking block data, or restarts that plainly aren't sticking:
+    // stop the futile loop and call for a one-click repair instead.
+    if ((dataCrash && (looping || recent >= 1)) || (recent >= REPAIR_AFTER && !memoryTrouble)) {
+      w.needsRepair = true;
+      w.repairReason = dataCrash ? crash : "restart-loop";
+      w.recovering = false;
+      this.onEvent({
+        type: "node",
+        level: "warn",
+        message:
+          "Your node's block data looks corrupted — restarting can't fix it. Open the Node tab and click “Repair node data” to rebuild it from a verified snapshot (a few minutes; your wallet and keys are untouched).",
+      });
+      return;
+    }
+
     // Repeated low-memory crashes -> switch to a lighter footprint for good.
     let switchedSaver = false;
-    if ((health.oom || health.reason === "oom") && !w.memorySaver) {
+    if (memoryTrouble && !w.memorySaver) {
       w.oomHits += 1;
       if (w.oomHits >= SAVER_AFTER_OOM) {
         w.memorySaver = true;
@@ -347,15 +384,15 @@ class NodeManager {
       });
     }
 
-    // Chronic trouble even after memory-saver: point at the cloud, once.
+    // Chronic low-memory trouble even after memory-saver: point at the cloud, once.
     w.recoveries = w.recoveries.filter((t) => Date.now() - t < RECOVERY_WINDOW_MS);
-    if (w.recoveries.length >= CHRONIC_AFTER && !w.warnedChronic) {
+    if (memoryTrouble && w.recoveries.length >= CHRONIC_AFTER && !w.warnedChronic) {
       w.warnedChronic = true;
       this.onEvent({
         type: "node",
         level: "warn",
         message:
-          "Your node keeps running low on resources on this PC. The app will keep restarting it for you, but for reliable 24/7 uptime you may want to run it in the cloud.",
+          "Your node keeps running low on memory on this PC. The app will keep restarting it for you, but for reliable 24/7 uptime you may want to run it in the cloud.",
       });
     }
 
@@ -639,10 +676,12 @@ class NodeManager {
       memorySaver: w?.memorySaver || false,
       health: w
         ? {
-            ok: w.health?.ok !== false,
-            reason: w.health?.reason || null,
+            ok: w.health?.ok !== false && !w.needsRepair,
+            reason: w.needsRepair ? "needs-repair" : w.health?.reason || null,
             recovering: !!w.recovering,
             memorySaver: !!w.memorySaver,
+            needsRepair: !!w.needsRepair,
+            repairReason: w.repairReason || null,
             recoveries: w.recoveries?.length || 0,
             lastRecoveryAt: w.recoveries?.length ? w.recoveries[w.recoveries.length - 1] : null,
           }

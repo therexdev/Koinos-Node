@@ -6,7 +6,7 @@
 
 async function call(channel, payload) {
   const res = await window.koinos.invoke(channel, payload);
-  if (!res.ok) throw new Error(res.error || "Unknown error");
+  if (!res.ok) throw new Error(cleanErr(res.error) || "Unknown error");
   return res.data;
 }
 
@@ -15,6 +15,9 @@ const S = {
   wallet: null,       // wallet:status
   balances: null,     // chain:balances
   balancesAt: 0,
+  cryptoBal: null,    // fund:cryptoBalances — ETH/USDT/vKOIN in the funding address
+  cryptoBalAt: 0,     // last successful fetch (stale numbers stay up during outages)
+  cryptoBalErr: null, // last fetch error, shown alongside the stale numbers
   node: null,         // node:status
   producer: null,     // producer:status
   rewards: null,      // rewards:status
@@ -32,6 +35,15 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+// RPC gateways sometimes hand back a whole HTML error page as the "message".
+// Reduce any error to one readable line so toasts and notes stay legible.
+function cleanErr(s) {
+  let t = String(s ?? "");
+  if (/<\s*(!doctype|html|head|body|title|div|p|br|h\d)\b/i.test(t)) t = t.replace(/<[^>]*>/g, " ");
+  t = t.replace(/\s+/g, " ").trim();
+  return t.length > 200 ? t.slice(0, 200) + "…" : t;
 }
 
 // ---------- formatting ----------
@@ -80,7 +92,7 @@ function sym() {
 function toast(message, kind = "info", ms = 5000) {
   const div = document.createElement("div");
   div.className = `toast ${kind}`;
-  div.textContent = message;
+  div.textContent = cleanErr(message);
   $("#toasts").appendChild(div);
   setTimeout(() => div.remove(), ms);
 }
@@ -482,7 +494,7 @@ function renderWalletView() {
     </div>
     <p class="muted" id="bal-note" style="margin-top:8px"></p>
     <div class="card">
-      <div class="row spread"><h2 style="margin:0">⟠ Ethereum &amp; USDT</h2><span class="pill">funding wallet</span></div>
+      <div class="row spread"><h2 style="margin:0">⟠ Ethereum &amp; USDT</h2><div class="row" style="gap:8px;align-items:center"><button id="w-crypto-refresh" class="btn ghost" title="Refresh ETH / USDT / vKOIN balances" style="padding:4px 10px">↻</button><span class="pill">funding wallet</span></div></div>
       <p class="hint">Your Ethereum funding address, derived from this same wallet key. Receive ETH or USDT here to fund the node, or send them back out.</p>
       <div class="row" style="gap:8px;align-items:center">
         <div class="addr" id="w-eth-addr" style="flex:1">…</div>
@@ -494,6 +506,7 @@ function renderWalletView() {
         <div class="stat"><div class="label">USDT</div><div class="value" id="w-usdt-bal">…</div><div class="sub"><button id="w-usdt-send" class="btn ghost" style="padding:4px 12px">Send USDT</button></div></div>
         <div class="stat"><div class="label">vKOIN</div><div class="value" id="w-vkoin-bal">…</div><div class="sub row" style="gap:6px;justify-content:center"><button id="w-vkoin-send" class="btn ghost" style="padding:4px 10px">Send</button><button id="w-vkoin-bridge" class="btn" style="padding:4px 10px">Bridge→KOIN</button></div></div>
       </div>
+      <p class="muted small" id="w-crypto-note" style="margin-top:8px;min-height:16px"></p>
       <p class="hint" style="margin-top:8px">vKOIN bridges 1:1 to native KOIN. Use <b>Bridge→KOIN</b> to rescue vKOIN that a funding run left in this address.</p>
     </div>`;
   $("#w-lock").addEventListener("click", async () => {
@@ -516,24 +529,61 @@ function renderWalletView() {
   $("#w-usdt-send").addEventListener("click", openUsdtSendModal);
   $("#w-vkoin-send").addEventListener("click", openVkoinSendModal);
   $("#w-vkoin-bridge").addEventListener("click", onBridgeVkoin);
+  $("#w-crypto-refresh").addEventListener("click", () => refreshCryptoBalances(true));
   patchBalances();
+  patchCryptoBalances(); // restore cached numbers instantly (fresh ones follow)
   refreshBalances(true);
-  refreshCryptoBalances();
+  refreshCryptoBalances(true);
 }
 
-async function refreshCryptoBalances() {
-  const setb = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+// Fetch the funding-address balances (ETH/USDT/vKOIN). 25s-cached like the
+// Koinos balances, so it's safe to call from the heartbeat, view switches, and
+// funding events; `force` (the ↻ button, a wallet re-render) bypasses the cache.
+let _cryptoBalBusy = false;
+async function refreshCryptoBalances(force = false) {
+  if (S.walletStage !== "unlocked") return; // the card only exists when unlocked
+  if (_cryptoBalBusy) return;
+  if (!force && Date.now() - S.cryptoBalAt < 25000) return patchCryptoBalances();
+  _cryptoBalBusy = true;
+  const btn = document.getElementById("w-crypto-refresh");
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
   try {
-    const r = await call("fund:cryptoBalances");
+    S.cryptoBal = await call("fund:cryptoBalances");
+    S.cryptoBalAt = Date.now();
+    S.cryptoBalErr = null;
+  } catch (e) {
+    S.cryptoBalErr = e.message; // keep the last good numbers on screen
+  } finally {
+    _cryptoBalBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = "↻"; }
+    patchCryptoBalances();
+  }
+}
+
+// Paint the funding-address balances + status line from state. Separate from the
+// fetch so a re-render can restore the numbers without a network round-trip.
+function patchCryptoBalances() {
+  const setb = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const b = S.cryptoBal;
+  if (b) {
     const addrEl = document.getElementById("w-eth-addr");
-    if (addrEl && r.address) addrEl.textContent = r.address;
-    setb("w-eth-bal", Number(r.eth).toLocaleString(undefined, { maximumFractionDigits: 6 }));
-    setb("w-usdt-bal", Number(r.usdt).toLocaleString(undefined, { maximumFractionDigits: 2 }));
-    setb("w-vkoin-bal", Number(r.vkoin).toLocaleString(undefined, { maximumFractionDigits: 4 }));
-  } catch {
-    setb("w-eth-bal", "—");
-    setb("w-usdt-bal", "—");
-    setb("w-vkoin-bal", "—");
+    if (addrEl && b.address) addrEl.textContent = b.address;
+    setb("w-eth-bal", Number(b.eth).toLocaleString(undefined, { maximumFractionDigits: 6 }));
+    setb("w-usdt-bal", Number(b.usdt).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+    setb("w-vkoin-bal", Number(b.vkoin).toLocaleString(undefined, { maximumFractionDigits: 4 }));
+  } else if (S.cryptoBalErr) {
+    setb("w-eth-bal", "—"); setb("w-usdt-bal", "—"); setb("w-vkoin-bal", "—");
+  }
+  const note = document.getElementById("w-crypto-note");
+  if (!note) return;
+  if (S.cryptoBalErr) {
+    note.style.color = "var(--bad)";
+    note.textContent = b
+      ? `Refresh failed — showing balances from ${new Date(S.cryptoBalAt).toLocaleTimeString()}, retrying (${S.cryptoBalErr})`
+      : `Couldn't load balances — retrying (${S.cryptoBalErr})`;
+  } else {
+    note.style.color = "";
+    note.textContent = b ? `Updated ${new Date(S.cryptoBalAt).toLocaleTimeString()}` : "";
   }
 }
 
@@ -1657,7 +1707,7 @@ function patchFundUnified() {
   if (b && b.status === "done") banner += fundDoneBanner("Route B", b.koinReceived);
   else if (b && b.status === "error") banner += fundErrorBanner("Route B", b, b.ethTxHash ? "Your ETH deposit is safe — retry to resume." : "");
   if (c && c.source !== "usdt" && c.status === "done") banner += fundDoneBanner("Route C", c.koinReceived);
-  else if (c && c.source !== "usdt" && c.status === "error") banner += fundErrorBanner("Route C", c, "Funds are safe as ETH / USDT / vKOIN.");
+  else if (c && c.source !== "usdt" && c.status === "error") banner += fundErrorBanner("Route C", c, "Funds are safe as ETH / USDT / vKOIN — check the Wallet tab.");
   const usdtBusy = c && !isTerminal(c) && c.source === "usdt";
 
   const ctl = [];
@@ -1789,7 +1839,7 @@ function patchUsdtFund() {
 
   let banner = "";
   if (c && c.source === "usdt" && c.status === "done") banner = fundDoneBanner("USDT funding", c.koinReceived);
-  else if (c && c.source === "usdt" && c.status === "error") banner = fundErrorBanner("USDT funding", c, "Funds are safe as USDT / vKOIN.");
+  else if (c && c.source === "usdt" && c.status === "error") banner = fundErrorBanner("USDT funding", c, "Funds are safe as USDT / vKOIN — check the Wallet tab.");
   const busyElsewhere = anyFundingActive();
 
   el.innerHTML = `${banner}
@@ -2071,7 +2121,7 @@ function patchRouteC() {
     banner = `<div class="banner good">✅ Funded via Route C! Received ~<b>${esc(fmtKoin(job.koinReceived))} KOIN</b> — check the Wallet tab.</div>`;
   } else if (job && job.status === "error") {
     const where = job.failedAt ? ` (at ${esc(job.failedAt)})` : "";
-    banner = `<div class="banner bad">Route C stopped${where}: ${esc(job.error || "unknown error")}<br><span class="small">Your funds are safe as ETH / USDT / vKOIN — Resume continues from the last step.</span></div>`;
+    banner = `<div class="banner bad">Route C stopped${where}: ${esc(job.error || "unknown error")}<br><span class="small">Your funds are safe as ETH / USDT / vKOIN (check the Wallet tab) — Resume continues from the last step.</span></div>`;
   }
   el.innerHTML = `${banner}
     <div class="field" style="margin-top:10px"><span>Amount (ETH · max 0.05)</span>
@@ -2695,6 +2745,7 @@ function switchView(view) {
   if (view === "returns") refreshRewards();
   if (view === "fund") refreshFund();
   if (view === "wallet" || view === "burn") refreshBalances();
+  if (view === "wallet") refreshCryptoBalances();
 }
 
 async function heartbeat() {
@@ -2702,6 +2753,7 @@ async function heartbeat() {
     await refreshWallet();
     if (S.view === "dashboard") await refreshDashboard();
     if (S.view === "wallet" || S.view === "burn") await refreshBalances();
+    if (S.view === "wallet") await refreshCryptoBalances();
     if (S.view === "node") await refreshNode();
     if (S.view === "returns") await refreshRewards();
     if (S.view === "fund") await refreshFund();
@@ -2721,7 +2773,14 @@ async function init() {
     }
     if (evt.type === "node" && S.view === "node") refreshNode();
     if (evt.type === "rewards") { refreshRewards(); S.balancesAt = 0; }
-    if ((evt.type === "bridge" || evt.type === "routeC") && S.view === "fund") refreshFundJobs();
+    if (evt.type === "bridge" || evt.type === "routeC") {
+      // A funding step moved money — drop both balance caches so the wallet
+      // shows the new reality within a heartbeat, and refresh now if visible.
+      S.balancesAt = 0;
+      S.cryptoBalAt = 0;
+      if (S.view === "fund") refreshFundJobs();
+      if (S.view === "wallet") { refreshBalances(); refreshCryptoBalances(); }
+    }
     if (S.view === "dashboard") refreshDashboard();
   });
 

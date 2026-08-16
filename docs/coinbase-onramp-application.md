@@ -3,30 +3,27 @@
 Draft answers to CDP's application questions for **Koinos Node Desktop**
 (this repository). Copy/adapt these into the reply to Coinbase.
 
-## ⚠️ Before sending — deploy the backend first
+## ⚠️ Before sending — update and verify the live backend
 
-CDP will test the URLs in answer 4, so the session-token backend must be live
-before this reply goes out. The website (koinoskit.site) is static GitHub
-Pages and cannot host it; the backend is the small serverless function in
-[`onramp-endpoint/`](../onramp-endpoint), deployed for free on Vercel
-(~5 minutes, full steps in [coinbase-onramp.md](coinbase-onramp.md)):
+CDP will test the URLs in answer 4. The backend already exists: Vercel
+project **koinos-node** serving `https://koinos-node.vercel.app`, with
+`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, `ONRAMP_SHARED_SECRET`, and
+`KOINOS_SPONSOR_WIF` configured. Before replying:
 
-1. On [vercel.com](https://vercel.com) (free hobby account): **Add New →
-   Project**, import this GitHub repo, set **Root Directory** to
-   `onramp-endpoint`, and **name the project `koinos-node`** — that makes the
-   URL `koinos-node.vercel.app`, which is what the desktop app already uses as
-   its built-in default. (A different name or a custom domain like
-   `api.koinoskit.site` works too — then update `DEFAULT_ONRAMP_ENDPOINT` in
-   `electron/main.js` and `DEFAULT_SPONSOR_ENDPOINT` in
-   `electron/lib/sponsor-relay.js` / `electron/lib/bridge-orchestrator.js`.)
-2. Set the environment variables: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`
-   (from the [CDP Portal](https://portal.cdp.coinbase.com/) → Secret API Key)
-   and `ONRAMP_SHARED_SECRET` (the app key from the docs). The endpoint
-   fails closed without the shared secret. (`KOINOS_SPONSOR_WIF` is only for
-   the mana relayer — not needed for the Onramp review.)
-3. Verify with the curl commands in [coinbase-onramp.md](coinbase-onramp.md):
-   with the `x-koinoskit-app` header you get `{"token":"..."}`; without it,
-   `{"error":"Unauthorized"}`.
+1. **Redeploy production with the security changes** (required auth +
+   no-wildcard CORS). Vercel deploys production from its configured
+   Production Branch (Settings → Git) — make sure a branch containing these
+   changes is what production builds from, then confirm the new deployment
+   shows the newer commit on the project's Overview page.
+2. **Verify from a terminal or browser:**
+   - `GET https://koinos-node.vercel.app/api/sponsor` → `{"address":"1…"}`
+     (also proves the project's Root Directory is wired to
+     `onramp-endpoint/`).
+   - `POST https://koinos-node.vercel.app/api/session` *without* the
+     `x-koinoskit-app` header → `{"error":"Unauthorized"}`, and the response
+     must have **no** `Access-Control-Allow-Origin: *` header.
+   - The same POST *with* the header (curl in
+     [coinbase-onramp.md](coinbase-onramp.md)) → `{"token":"..."}`.
 
 ---
 
@@ -97,8 +94,6 @@ Koinos wallet.
 - **Production session-token backend:** `https://koinos-node.vercel.app/api/session`
   (POST, authenticated with the `x-koinoskit-app` app key; source in
   [`onramp-endpoint/api/session.js`](../onramp-endpoint/api/session.js)).
-  *Goes live with the deployment step above — swap in your actual URL if you
-  chose a different project name or domain.*
 - **Production desktop app (installers for Windows/macOS/Linux):**
   https://github.com/therexdev/Koinos-Node/releases/latest — it's a desktop
   app, so there is no TestFlight build; to review the flow, install the app

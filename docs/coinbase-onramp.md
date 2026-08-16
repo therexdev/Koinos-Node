@@ -35,12 +35,14 @@ one function (`api/session.js`) plus a `package.json`.
 
 > **App-owner note:** the desktop app ships with a built-in default endpoint of
 > `https://koinos-node.vercel.app/api/session` (`DEFAULT_ONRAMP_ENDPOINT` in
-> `electron/main.js`) — but nothing exists at that URL until the owner deploys
-> this folder there. Name the Vercel project `koinos-node` and every install's
-> Buy button works with no further configuration; pick a different name (or a
-> custom domain such as `api.koinoskit.site`) and update that constant — and
-> `DEFAULT_SPONSOR_ENDPOINT` in `electron/lib/sponsor-relay.js` and
-> `electron/lib/bridge-orchestrator.js` — to match.
+> `electron/main.js`), served by the owner's Vercel project **koinos-node**.
+> Vercel redeploys production whenever its configured **Production Branch**
+> (Settings → Git) is pushed — changes to `onramp-endpoint/` only reach the
+> live endpoint once they land on that branch. If the endpoint ever moves to a
+> different project name or a custom domain (e.g. `api.koinoskit.site`),
+> update that constant — and `DEFAULT_SPONSOR_ENDPOINT` in
+> `electron/lib/sponsor-relay.js` and `electron/lib/bridge-orchestrator.js` —
+> to match.
 
 **Option B — Vercel CLI:**
 ```bash

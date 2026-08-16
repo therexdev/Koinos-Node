@@ -3,6 +3,31 @@
 Draft answers to CDP's application questions for **Koinos Node Desktop**
 (this repository). Copy/adapt these into the reply to Coinbase.
 
+## ⚠️ Before sending — deploy the backend first
+
+CDP will test the URLs in answer 4, so the session-token backend must be live
+before this reply goes out. The website (koinoskit.site) is static GitHub
+Pages and cannot host it; the backend is the small serverless function in
+[`onramp-endpoint/`](../onramp-endpoint), deployed for free on Vercel
+(~5 minutes, full steps in [coinbase-onramp.md](coinbase-onramp.md)):
+
+1. On [vercel.com](https://vercel.com) (free hobby account): **Add New →
+   Project**, import this GitHub repo, set **Root Directory** to
+   `onramp-endpoint`, and **name the project `koinos-node`** — that makes the
+   URL `koinos-node.vercel.app`, which is what the desktop app already uses as
+   its built-in default. (A different name or a custom domain like
+   `api.koinoskit.site` works too — then update `DEFAULT_ONRAMP_ENDPOINT` in
+   `electron/main.js` and `DEFAULT_SPONSOR_ENDPOINT` in
+   `electron/lib/sponsor-relay.js` / `electron/lib/bridge-orchestrator.js`.)
+2. Set the environment variables: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`
+   (from the [CDP Portal](https://portal.cdp.coinbase.com/) → Secret API Key)
+   and `ONRAMP_SHARED_SECRET` (the app key from the docs). The endpoint
+   fails closed without the shared secret. (`KOINOS_SPONSOR_WIF` is only for
+   the mana relayer — not needed for the Onramp review.)
+3. Verify with the curl commands in [coinbase-onramp.md](coinbase-onramp.md):
+   with the `x-koinoskit-app` header you get `{"token":"..."}`; without it,
+   `{"error":"Unauthorized"}`.
+
 ---
 
 ## 1. Complete end-to-end flow and example use cases
@@ -72,6 +97,8 @@ Koinos wallet.
 - **Production session-token backend:** `https://koinos-node.vercel.app/api/session`
   (POST, authenticated with the `x-koinoskit-app` app key; source in
   [`onramp-endpoint/api/session.js`](../onramp-endpoint/api/session.js)).
+  *Goes live with the deployment step above — swap in your actual URL if you
+  chose a different project name or domain.*
 - **Production desktop app (installers for Windows/macOS/Linux):**
   https://github.com/therexdev/Koinos-Node/releases/latest — it's a desktop
   app, so there is no TestFlight build; to review the flow, install the app

@@ -33,6 +33,15 @@ one function (`api/session.js`) plus a `package.json`.
    - `ALLOW_ORIGIN` (optional) — only needed if you call the endpoint from a web page. Must be an explicit origin like `https://yourapp.example`; a `*` wildcard is never emitted (also a Coinbase security requirement). The desktop app doesn't need CORS, so normally leave this unset.
 4. **Deploy.** Your endpoint URL will be `https://<your-project>.vercel.app/api/session`.
 
+> **App-owner note:** the desktop app ships with a built-in default endpoint of
+> `https://koinos-node.vercel.app/api/session` (`DEFAULT_ONRAMP_ENDPOINT` in
+> `electron/main.js`) — but nothing exists at that URL until the owner deploys
+> this folder there. Name the Vercel project `koinos-node` and every install's
+> Buy button works with no further configuration; pick a different name (or a
+> custom domain such as `api.koinoskit.site`) and update that constant — and
+> `DEFAULT_SPONSOR_ENDPOINT` in `electron/lib/sponsor-relay.js` and
+> `electron/lib/bridge-orchestrator.js` — to match.
+
 **Option B — Vercel CLI:**
 ```bash
 cd onramp-endpoint

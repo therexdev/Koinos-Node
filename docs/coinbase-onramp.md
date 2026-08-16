@@ -29,7 +29,8 @@ one function (`api/session.js`) plus a `package.json`.
 3. Under **Environment Variables**, add:
    - `CDP_API_KEY_ID` = your CDP key id
    - `CDP_API_KEY_SECRET` = your CDP key secret
-   - `ONRAMP_SHARED_SECRET` = `kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f` (the app key KoinosKit sends in the `x-koinoskit-app` header; when set, the endpoint rejects callers that don't send it). Leave unset to allow any caller.
+   - `ONRAMP_SHARED_SECRET` = `kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f` (**required** — the app key KoinosKit sends in the `x-koinoskit-app` header; the endpoint rejects callers that don't send it, and refuses to mint tokens at all if this variable is unset. Coinbase's [security requirements](https://docs.cdp.coinbase.com/onramp/security-requirements) mandate authenticating callers before requesting a session token.)
+   - `ALLOW_ORIGIN` (optional) — only needed if you call the endpoint from a web page. Must be an explicit origin like `https://yourapp.example`; a `*` wildcard is never emitted (also a Coinbase security requirement). The desktop app doesn't need CORS, so normally leave this unset.
 4. **Deploy.** Your endpoint URL will be `https://<your-project>.vercel.app/api/session`.
 
 **Option B — Vercel CLI:**
@@ -58,10 +59,12 @@ Coinbase" button now works.
 ```bash
 curl -s -X POST https://<your-project>.vercel.app/api/session \
   -H 'content-type: application/json' \
+  -H 'x-koinoskit-app: kkapp_71854dc40591df1aeb8811a514e3dbc302bb382f' \
   -d '{"address":"0x0000000000000000000000000000000000000000","asset":"ETH","network":"ethereum"}'
 ```
 A healthy response looks like `{"token":"..."}`. Errors come back as
-`{"error":"..."}` with the reason.
+`{"error":"..."}` with the reason — without the `x-koinoskit-app` header you
+should get `{"error":"Unauthorized"}`, which means the auth check is working.
 
 ## The function
 
@@ -78,7 +81,8 @@ The desktop app then opens
 ## Notes & security
 
 - The secret key lives **only** in your endpoint's environment variables, never in the app.
-- The endpoint only mints session tokens for an address the caller supplies; it can't move funds. If you want to limit who can call it, add a shared secret header or an allowlist — but it's low-risk since Coinbase bills the buyer.
+- Callers are authenticated **before** the endpoint asks Coinbase for a session token: the `x-koinoskit-app` app key is required, requests are rate-limited per IP, and a deployment without `ONRAMP_SHARED_SECRET` fails closed. `Access-Control-Allow-Origin` is never `*`. Both are Coinbase [Onramp security requirements](https://docs.cdp.coinbase.com/onramp/security-requirements).
+- The endpoint only mints session tokens for an address the caller supplies; it can't move funds.
 - Session tokens expire after ~5 minutes, which is why they're minted on demand each time you click Buy.
 - Coinbase Onramp availability and payment methods depend on the buyer's region; the hosted Coinbase Pay page handles all KYC/limits.
 - Source of truth for the API: Coinbase's official [onramp-demo-application](https://github.com/coinbase/onramp-demo-application) and [Create session token](https://docs.cdp.coinbase.com/api-reference/rest-api/onramp-offramp/create-session-token) docs. If Coinbase changes the SDK import path or fields, follow the demo.

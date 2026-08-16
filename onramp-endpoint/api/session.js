@@ -9,15 +9,20 @@
 // Deploy on Vercel (Node runtime). Environment variables:
 //   CDP_API_KEY_ID      — your CDP API key id / name            (required)
 //   CDP_API_KEY_SECRET  — your CDP API key secret               (required)
-//   ONRAMP_SHARED_SECRET— shared app key; when set, callers must send it in the
-//                         x-koinoskit-app header (rejects casual abuse of this
-//                         public endpoint). Leave unset to allow all callers.
-//   ALLOW_ORIGIN        — CORS origin to allow (default "*")     (optional)
+//   ONRAMP_SHARED_SECRET— app key callers must send in the x-koinoskit-app
+//                         header. Required: without it the endpoint refuses to
+//                         mint tokens (Coinbase's security requirements mandate
+//                         authenticating callers before requesting a session
+//                         token).
+//   ALLOW_ORIGIN        — explicit CORS origin for web callers (optional; the
+//                         desktop app needs none, and "*" is never emitted)
 //
 // Reference: Coinbase's official demo — https://github.com/coinbase/onramp-demo-application
 //            Create session token — https://docs.cdp.coinbase.com/api-reference/rest-api/onramp-offramp/create-session-token
+//            Security requirements — https://docs.cdp.coinbase.com/onramp/security-requirements
 
 import { generateJwt } from "@coinbase/cdp-sdk/auth";
+import { applyCors, checkAuth } from "../lib/guard.cjs";
 
 const HOST = "api.developer.coinbase.com";
 const PATH = "/onramp/v1/token";
@@ -34,18 +39,13 @@ function rateLimited(ip, limit = 20, windowMs = 60000) {
 }
 
 export default async function handler(req, res) {
-  const origin = process.env.ALLOW_ORIGIN || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, x-koinoskit-app");
+  applyCors(res, process.env.ALLOW_ORIGIN);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  // Verify the caller is our app (only enforced when a shared secret is set).
-  const sharedSecret = process.env.ONRAMP_SHARED_SECRET;
-  if (sharedSecret && req.headers["x-koinoskit-app"] !== sharedSecret) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  // Verify the caller is our app before anything touches Coinbase.
+  const auth = checkAuth(req, process.env.ONRAMP_SHARED_SECRET);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "unknown";
   if (rateLimited(ip)) return res.status(429).json({ error: "Too many requests, try again shortly" });

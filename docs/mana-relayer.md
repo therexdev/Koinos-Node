@@ -19,7 +19,7 @@ It lives in the **same Vercel project** as the Coinbase function
 | Var | Required | Purpose |
 |---|---|---|
 | `KOINOS_SPONSOR_WIF` | ✅ | Sponsor wallet WIF (pays mana). You already set this. |
-| `ONRAMP_SHARED_SECRET` | shared | Same app key as the Coinbase endpoint (already set). |
+| `ONRAMP_SHARED_SECRET` | ✅ | Same app key as the Coinbase endpoint (already set). POST fails closed without it. |
 | `SPONSOR_RC_MAX` | optional | Per-tx mana ceiling in satoshis (default `500000000` = 5 KOIN). |
 | `KOINOS_NETWORK` | optional | `mainnet` (default). |
 | `KOINOS_RPC` | optional | Comma-separated RPC override (default `https://api.koinos.io`). |

@@ -6,7 +6,8 @@
 //
 // Environment variables (set in the same Vercel project as api/session.js):
 //   KOINOS_SPONSOR_WIF   the sponsor wallet's WIF (pays mana)          (required)
-//   ONRAMP_SHARED_SECRET app key checked in the x-koinoskit-app header (shared)
+//   ONRAMP_SHARED_SECRET app key checked in the x-koinoskit-app header (required,
+//                        shared with api/session.js)
 //   SPONSOR_RC_MAX       per-tx mana ceiling in satoshis (default 5 KOIN)
 //   KOINOS_NETWORK       mainnet (default)
 //   KOINOS_RPC           comma-separated RPC override (default api.koinos.io)
@@ -15,6 +16,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { Signer, Provider } = require("koilib");
 const { validateSponsoredTx, ALLOWED_OPS } = require("../lib/validate-sponsored-tx.cjs");
+const { applyCors, checkAuth } = require("../lib/guard.cjs");
 
 const RPCS = (process.env.KOINOS_RPC || "https://api.koinos.io")
   .split(",")
@@ -45,10 +47,7 @@ function sponsorSigner() {
 }
 
 export default async function handler(req, res) {
-  const origin = process.env.ALLOW_ORIGIN || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, x-koinoskit-app");
+  applyCors(res, process.env.ALLOW_ORIGIN, { methods: "GET, POST, OPTIONS" });
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const sponsor = sponsorSigner();
@@ -61,11 +60,10 @@ export default async function handler(req, res) {
   }
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  // App-identity check (same shared secret as the Coinbase endpoint).
-  const shared = process.env.ONRAMP_SHARED_SECRET;
-  if (shared && req.headers["x-koinoskit-app"] !== shared) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  // App-identity check (same shared secret as the Coinbase endpoint). Required:
+  // a deployment without the secret fails closed rather than co-signing for all.
+  const auth = checkAuth(req, process.env.ONRAMP_SHARED_SECRET);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const tx = body.transaction;

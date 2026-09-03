@@ -212,6 +212,18 @@ unsigned-app notice as usual). From then on it auto-updates to each new
 `-beta.N` you push, and finally onto the matching **stable** release when you
 cut it (e.g. `v0.3.0`).
 
+**Releasing without pushing a tag:** pushing the **`release` branch** builds
+and publishes whatever version is in `package.json`, creating the tag for you
+— the same result as a tag push, for tooling (or a CI token) that can push
+branches but not tags. Bump the version first: the workflow refuses to rebuild
+a version that is already published.
+
+```bash
+npm version patch                     # bump + commit on your working branch
+git push origin <branch>              # land the bump
+git push origin HEAD:release          # ...and ship it
+```
+
 **How the channels stay separate:** the auto-updater keys off the *running
 build's own version*. A stable build (e.g. `0.2.5`) ignores pre-releases; a beta
 build (`0.3.0-beta.1`) sets `allowPrerelease` and always takes the highest

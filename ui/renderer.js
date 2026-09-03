@@ -107,6 +107,36 @@ function showModal({ title, body, actions = [], onMount }) {
   return close;
 }
 
+// Shows an address as a scannable QR code (dark-on-white whatever the app
+// theme is — scanners need the light background).
+function showQrModal({ title, address, note }) {
+  showModal({
+    title,
+    body: `
+      <div class="qr-box"><div class="qr-canvas"></div></div>
+      ${note ? `<p class="small muted" style="text-align:center;margin:12px 0 0">${esc(note)}</p>` : ""}
+      <div class="addr" style="margin-top:10px;text-align:center">${esc(address)}</div>`,
+    actions: [
+      {
+        label: "Copy address",
+        onClick: async () => {
+          await call("util:copy", { text: address });
+          toast("Address copied", "good");
+        },
+      },
+      { label: "Close", class: "primary", onClick: (close) => close() },
+    ],
+    onMount: (backdrop) => {
+      const holder = $(".qr-canvas", backdrop);
+      try {
+        holder.appendChild(QRCode.toSvg(address, { label: `QR code for ${address}` }));
+      } catch (e) {
+        holder.textContent = `Couldn't render the QR code: ${String(e.message || e)}`;
+      }
+    },
+  });
+}
+
 function busyButton(btn, busy, labelBusy = "Working…") {
   if (!btn) return;
   if (busy) {
@@ -472,6 +502,7 @@ function renderWalletView() {
       <div class="row">
         <div class="addr" style="flex:1">${esc(S.wallet.address)}</div>
         <button id="w-copy" class="btn">Copy</button>
+        <button id="w-qr" class="btn ghost">QR Code</button>
         ${net().explorer ? '<button id="w-explore" class="btn ghost">Explorer ↗</button>' : ""}
       </div>
     </div>
@@ -487,6 +518,7 @@ function renderWalletView() {
       <div class="row" style="gap:8px;align-items:center">
         <div class="addr" id="w-eth-addr" style="flex:1">…</div>
         <button id="w-eth-copy" class="btn">Copy</button>
+        <button id="w-eth-qr" class="btn ghost">QR Code</button>
       </div>
       <div class="banner warn" style="margin-top:10px">Send only <b>ETH or USDT on Ethereum Mainnet</b> to this address. Other networks/tokens may be lost.</div>
       <div class="grid-3" style="margin-top:12px">
@@ -505,13 +537,35 @@ function renderWalletView() {
     await call("util:copy", { text: S.wallet.address });
     toast("Address copied");
   });
+  $("#w-qr").addEventListener("click", () =>
+    showQrModal({
+      title: `Receive ${sym()}`,
+      address: S.wallet.address,
+      note: `Scan to send ${sym()} or VHP to this wallet.`,
+    })
+  );
   $("#w-explore")?.addEventListener("click", () =>
     call("util:openExternal", { url: net().explorer.address + S.wallet.address }).catch(() => {})
   );
   $("#w-send").addEventListener("click", openSendModal);
   const ea = S.wallet.ethAddress || "";
   $("#w-eth-addr").textContent = ea || "(unavailable)";
-  $("#w-eth-copy").addEventListener("click", async () => { await call("util:copy", { text: ea }); toast("ETH address copied"); });
+  // The address lands asynchronously (refreshCryptoBalances), so read whatever
+  // is on screen now rather than the value captured at render time.
+  const ethAddrNow = () => {
+    const shown = ($("#w-eth-addr")?.textContent || "").trim();
+    return /^0x[0-9a-fA-F]{40}$/.test(shown) ? shown : ea;
+  };
+  $("#w-eth-copy").addEventListener("click", async () => { await call("util:copy", { text: ethAddrNow() }); toast("ETH address copied"); });
+  $("#w-eth-qr").addEventListener("click", () => {
+    const addr = ethAddrNow();
+    if (!addr) return toast("No Ethereum address yet — unlock your wallet first", "warn");
+    showQrModal({
+      title: "Receive ETH or USDT",
+      address: addr,
+      note: "Ethereum Mainnet only — funds sent on other networks may be lost.",
+    });
+  });
   $("#w-eth-send").addEventListener("click", openEthSendModal);
   $("#w-usdt-send").addEventListener("click", openUsdtSendModal);
   $("#w-vkoin-send").addEventListener("click", openVkoinSendModal);
@@ -1879,6 +1933,7 @@ function patchFundView() {
           <div class="mono" style="word-break:break-all;font-size:15px;padding:10px;background:var(--card-2);border:1px solid var(--border);border-radius:8px">${esc(FUND.ethAddress)}</div>
           <div class="row" style="margin-top:8px;align-items:center;gap:10px">
             <button id="fund-copy" class="btn">Copy address</button>
+            <button id="fund-qr" class="btn ghost">QR Code</button>
             <span id="fund-bal" class="muted">Balance: checking…</span>
             <button id="fund-bal-refresh" class="btn ghost" title="Refresh balance" style="padding:4px 10px">↻</button>
           </div>`;
@@ -1886,6 +1941,13 @@ function patchFundView() {
           await call("util:copy", { text: FUND.ethAddress });
           toast("Address copied", "good");
         });
+        $("#fund-qr").addEventListener("click", () =>
+          showQrModal({
+            title: "Your Ethereum funding address",
+            address: FUND.ethAddress,
+            note: "Send only ETH or USDT on Ethereum Mainnet.",
+          })
+        );
         $("#fund-bal-refresh").addEventListener("click", loadEthBalance);
       } else {
         addrWrap.innerHTML = `<div class="banner warn">Create or unlock your wallet first — your ETH address is derived from it.</div>`;

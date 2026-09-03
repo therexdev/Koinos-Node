@@ -305,3 +305,15 @@ pre.logs {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--card-2); border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* QR code modal — always dark-on-white, whatever the app theme, so phone
+   cameras get the contrast they need. */
+.qr-box { display: flex; justify-content: center; }
+.qr-canvas {
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  line-height: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.qr-canvas svg { display: block; width: 240px; height: 240px; max-width: 100%; }

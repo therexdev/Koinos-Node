@@ -122,6 +122,7 @@ const NETWORKS = {
 
 const DEFAULT_SETTINGS = {
   network: "mainnet",
+  producer: { mode: "local", addresses: {} },
   customRpc: {},          // { [networkId]: "https://..." }
   node: {
     autoRecover: true,    // self-heal: auto-restart the node if it stalls/crashes

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self'; connect-src https://api.koinos.io; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>KoinosKit Producer Signer</title>
+  <link rel="stylesheet" href="signer.css">
+  <script src="koinos.min.js" defer></script>
+  <script src="kondor.min.js" defer></script>
+  <script src="abis.js" defer></script>
+  <script src="validation.js" defer></script>
+  <script src="signer.js" defer></script>
+</head>
+<body>
+<header class="site-nav"><div class="nav-inner"><a class="brand" href="https://koinoskit.site/">Koinos<em>Kit</em></a><nav aria-label="Main navigation"><a href="https://github.com/therexdev/Koinos-Node/blob/claude/koinos-wallet-node-app-d57jkl/docs/EXTERNAL_PRODUCER.md">Signing guide</a></nav></div></header>
+<main>
+  <span class="eyebrow">External producer wallet</span>
+  <h1>Producer Signer</h1>
+  <p class="lead">Sign with Kondor on your secure computer. Your producer private key stays in the wallet.</p>
+  <p>On the node computer, open <strong>Node → Producer wallet custody → External signing</strong>, prepare a transaction and download the unsigned JSON. Bring that file here. You do not need KoinosKit installed on this computer.</p>
+  <section>
+    <h2>1. Load and review</h2>
+    <p>Network: <strong>Koinos Mainnet</strong>. KoinosKit uses Mainnet by default. For Harbinger, use the offline helper.</p>
+    <label>Unsigned JSON file <input id="unsigned-file" type="file" accept=".json,application/json"></label>
+    <details><summary>Or paste unsigned JSON</summary><textarea id="unsigned" rows="6" maxlength="100000" spellcheck="false" aria-label="Unsigned transaction JSON"></textarea></details>
+    <button id="review">Review transaction</button>
+    <p id="status" role="status" aria-live="polite">Choose the unsigned file exported by KoinosKit.</p>
+    <div id="review-panel" hidden>
+      <dl id="review-fields"></dl>
+      <details><summary>Decoded operations and contract addresses</summary><pre id="operations"></pre></details>
+      <label class="check"><input id="confirmed" type="checkbox"> I checked the producer, network, amount, recipient and hot public key against my intended action.</label>
+    </div>
+  </section>
+  <section>
+    <h2>2. Sign in Kondor</h2>
+    <p>Use the browser where Kondor is installed. Approve access to the producer account, then review Kondor's transaction prompt. Keep <strong>Use free mana off</strong>. Optimize mana can stay on if its final Max mana is within the prepared maximum.</p>
+    <button id="sign" disabled>Sign with Kondor</button>
+    <p class="hint">This page requests a signature, then checks the returned transaction. Kondor may contact its RPC to simulate the transaction. KoinosKit on your node computer performs the final broadcast after your confirmation.</p>
+  </section>
+  <section>
+    <h2>3. Return to KoinosKit</h2>
+    <p id="signed-status">After signing, download the signed JSON and take it back to the node computer.</p>
+    <button id="download" disabled>Download signed JSON</button>
+    <details id="signed-details" hidden><summary>Signed JSON — copy if needed</summary><textarea id="signed" readonly rows="7" aria-label="Signed transaction JSON"></textarea></details>
+    <p>Choose <strong>Import signed JSON</strong> in KoinosKit, review and confirm, then broadcast. For registration, wait for confirmation and click <strong>Verify registration</strong> before starting production.</p>
+  </section>
+  <p class="hint">Drafts expire after 15 minutes, or 24 hours when prepared with Dual-boot / offline signing. After returning to Windows, choose Resume saved draft in KoinosKit before importing the signed JSON. Protect signed files: the blockchain does not enforce this local expiry. Files are processed in this page without uploading them to KoinosKit's website. Never enter a WIF or private key here.</p>
+  <a href="https://github.com/therexdev/Koinos-Node/blob/claude/koinos-wallet-node-app-d57jkl/docs/EXTERNAL_PRODUCER.md" rel="noreferrer">Signing and backup guide</a>
+</main>
+</body>
+</html>

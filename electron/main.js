@@ -9,6 +9,7 @@ const { NETWORKS, DEFAULT_SETTINGS } = require("./lib/constants");
 const { WalletService, MIN_PASSWORD_LENGTH } = require("./lib/wallet");
 const { ChainService } = require("./lib/chain");
 const { NodeManager } = require("./lib/node-manager");
+const { createProducerRuntime } = require("./lib/producer-runtime");
 const { withSyncHealth } = require("./lib/node-health");
 const { SetupService } = require("./lib/setup");
 const { RewardEngine } = require("./lib/rewards");
@@ -243,15 +244,19 @@ function setupAutoUpdates() {
   setInterval(check, 4 * 60 * 60 * 1000);
 }
 
-function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData }) {
+function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData, vaultRequest }) {
+  const producer = createProducerRuntime({ settings, state, wallet, chain, nodeMgr, rewards, vaultRequest });
+  const { custody } = producer;
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_evt, payload) => {
       try {
-        return { ok: true, data: await fn(payload ?? {}) };
+        return { ok: true, data: await producer.invoke(channel, fn, payload ?? {}) };
       } catch (e) {
         return { ok: false, error: String(e?.message ?? e) };
       }
     });
+
+  producer.register(handle);
 
   const publicNetworks = Object.fromEntries(
     Object.entries(NETWORKS).map(([id, n]) => [
@@ -276,12 +281,14 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
     userData,
     networks: publicNetworks,
     settings: settings.all(),
+    settingsHealth: settings.health(),
     minPasswordLength: MIN_PASSWORD_LENGTH,
   }));
 
-  handle("settings:update", ({ network, customRpc, keepLiquidKoin, onrampEndpoint }) => {
+  handle("settings:update", async ({ network, customRpc, keepLiquidKoin, onrampEndpoint }) => {
     if (network !== undefined) {
       if (!NETWORKS[network]) throw new Error(`Unknown network: ${network}`);
+      if (network !== chain.network().id) { await custody.stopped(); state.set("producerDraft", null); }
       settings.set("network", network);
       chain.clearCache();
       rewards.start(); // re-arm timer; reward baselines are tracked per network
@@ -310,7 +317,13 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   // ----- wallet -----
   handle("wallet:status", () => wallet.status());
   handle("wallet:create", ({ password }) => wallet.create({ password }));
-  handle("wallet:import", ({ wif, password }) => wallet.importWif({ wif, password }));
+  handle("wallet:import", ({ wif, password }) => {
+    if (custody.config().mode === "external") {
+      const address = require("koilib").Signer.fromWif(String(wif).trim()).getAddress();
+      if (Object.values(settings.get("producer.addresses", {})).includes(address)) throw new Error("Keep the external producer's private key on its signing machine. Import a separate local wallet.");
+    }
+    return wallet.importWif({ wif, password });
+  });
   handle("wallet:unlock", ({ password }) => wallet.unlock(password));
   handle("wallet:lock", () => wallet.lock());
   handle("wallet:revealWif", ({ password }) => wallet.revealWif(password));
@@ -333,6 +346,7 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   });
 
   handle("chain:burn", async ({ amount }) => {
+    custody.requireLocal();
     const amountSat = parseAmount(amount);
     const res = await chain.burn(wallet.signer, amountSat);
     sendEvent({
@@ -357,6 +371,7 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   handle("chain:sync", () => chain.syncStatus());
 
   handle("chain:maxBurn", async () => {
+    custody.requireLocal();
     const address = wallet.address;
     if (!address) throw new Error("No wallet");
     const { koin, mana } = await chain.balances(address);
@@ -377,23 +392,8 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   });
 
   // ----- block producer registration -----
-  handle("producer:status", async () => {
-    const networkId = chain.network().id;
-    const address = wallet.address;
-    const filePublicKey = nodeMgr.readProducerPublicKey(networkId);
-    let registeredPublicKey = null;
-    if (address) {
-      registeredPublicKey = await chain.registeredPublicKey(address);
-    }
-    return {
-      address,
-      filePublicKey,
-      registeredPublicKey,
-      matches: !!filePublicKey && filePublicKey === registeredPublicKey,
-    };
-  });
-
   handle("producer:register", async () => {
+    custody.requireLocal();
     const networkId = chain.network().id;
     const pub = nodeMgr.readProducerPublicKey(networkId);
     if (!pub) {
@@ -439,11 +439,7 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
 
   handle("node:start", async ({ produce }) => {
     const networkId = chain.network().id;
-    let producerAddress = null;
-    if (produce) {
-      producerAddress = wallet.address;
-      if (!producerAddress) throw new Error("Create a wallet first to enable block production");
-    }
+    const producerAddress = await producer.productionAddress(produce);
     return nodeMgr.start(networkId, producerAddress, { prepare: async () => {
       // One-time, best-effort: right-size the WSL VM so the node has enough memory
       // to begin with. Self-skips off Windows; writes .wslconfig only when it would
@@ -472,12 +468,8 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   handle("node:quickSync", () => nodeMgr.quickSync(chain.network().id));
   handle("node:quickSyncCancel", () => nodeMgr.cancelQuickSync());
   handle("node:rebuildInfo", () => nodeMgr.rebuildInfo(chain.network().id));
-  handle("node:rebuildState", ({ produce } = {}) => {
-    let producerAddress = null;
-    if (produce) {
-      producerAddress = wallet.address;
-      if (!producerAddress) throw new Error("Create a wallet first to enable block production");
-    }
+  handle("node:rebuildState", async ({ produce } = {}) => {
+    const producerAddress = await producer.productionAddress(produce);
     return nodeMgr.rebuildState(chain.network().id, producerAddress);
   });
   handle("node:rebuildCancel", () => nodeMgr.cancelRebuild());
@@ -485,11 +477,12 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
   // ----- dashboard -----
   handle("dashboard:summary", async () => {
     const net = chain.network();
-    const address = wallet.address;
+    const address = custody.config().address;
     const ws = wallet.status();
     const out = {
       network: { id: net.id, label: net.label, tokenSymbol: net.tokenSymbol, explorer: net.explorer },
-      wallet: { exists: ws.exists, unlocked: ws.unlocked, address },
+      wallet: { exists: !!address, unlocked: custody.config().mode === "local" && ws.unlocked, address },
+      custody: custody.config(),
       node: null,
       balances: null,
       stats: null,
@@ -555,8 +548,8 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
 
   // ----- rewards -----
   handle("rewards:status", () => rewards.status());
-  handle("rewards:configure", (patch) => rewards.configure(patch));
-  handle("rewards:runNow", () => rewards.tick("manual"));
+  handle("rewards:configure", (patch) => { if (patch.enabled) custody.requireLocal(); return rewards.configure(patch); });
+  handle("rewards:runNow", () => { custody.requireLocal(); return rewards.tick("manual"); });
 
   // ----- fund node (Ethereum on-ramp — Phase 1) -----
   // Shared, app-hosted Coinbase Onramp endpoint. Every install uses this by

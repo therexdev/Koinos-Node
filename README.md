@@ -6,7 +6,8 @@ A desktop app that makes running a Koinos block producer simple:
 2. **Create a Koinos wallet** — generated locally, encrypted with your password. Every address (KOIN and the Ethereum funding address) has a **QR Code** button for scanning from a phone.
 3. **Burn KOIN → VHP** — one click to convert liquid KOIN into Virtual Hash Power, the stake that produces blocks.
 4. **Launch a Koinos node** — the official Koinos microservices, managed for you through Docker, with guided block-producer setup.
-5. **Reward returns** — set a percentage of earned block rewards to return automatically: compound them back into VHP to keep your node producing, or send them to any address.
+5. **Producer wallet custody** — use a separate external wallet with a watch-only producer address and a hot block key. Sign with Kondor or Koin Vault; saved drafts support a 24-hour dual-boot workflow. See the [signing and backup guide](docs/EXTERNAL_PRODUCER.md).
+6. **Reward returns** — for local-wallet producers, set a percentage of earned block rewards to return automatically: compound them back into VHP to keep your node producing, or send them to any address.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 

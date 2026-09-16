@@ -317,3 +317,17 @@ pre.logs {
   box-shadow: 0 0 0 1px var(--border);
 }
 .qr-canvas svg { display: block; width: 240px; height: 240px; max-width: 100%; }
+
+/* Producer custody and external signing */
+.producer-custody { margin-bottom: 20px; }
+.custody-actions { flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.custody-key-row { display: flex; align-items: end; gap: 12px; }
+.custody-key-row .field { flex: 1; min-width: 0; }
+.custody-signing-content { padding-top: 16px; }
+.custody-signing summary { cursor: pointer; font-weight: 600; }
+.custody-vault { margin: 20px 0; padding: 18px; border: 1px solid var(--border, #384659); border-radius: 14px; }
+.custody-vault h3 { margin: 0 0 8px; }
+.producer-custody .mono, #pc-vault-status { overflow-wrap: anywhere; }
+#pc-vault-qr { width: 220px; max-width: 100%; margin: 16px 0; background: white; border-radius: 8px; }
+#pc-vault-qr svg { display: block; width: 100%; height: auto; }
+.producer-custody [hidden] { display: none !important; }

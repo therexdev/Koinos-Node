@@ -44,6 +44,8 @@ class SetupService {
     this._op = null;
     this._abort = null;
     this._cliPath = null; // memoized docker CLI location
+    this._installWatch = null; // post-install completion watcher
+    this._installPollMs = 10000; // overridable in tests
   }
 
   // Captures stdout/stderr as raw Buffers (so callers can decode UTF-16LE from
@@ -123,7 +125,7 @@ class SetupService {
       const local = process.env["LOCALAPPDATA"] || "";
       const rel = "Docker\\Docker\\resources\\bin\\docker.exe";
       const list = [path.join(pf, rel), path.join(pf64, rel)];
-      if (local) list.push(path.join(local, rel));
+      if (local) list.push(path.join(local, rel), path.join(local, "Programs", rel)); // per-user install
       return list;
     }
     if (this.platform === "darwin") {
@@ -173,9 +175,38 @@ class SetupService {
     return null;
   }
 
+  /** Where the Windows uninstaller says Docker Desktop lives — catches installs
+   *  outside the hardcoded paths (custom drive, per-user). Field report: the
+   *  installer finished and the setup card still said "Install Docker Desktop",
+   *  because detection never found the install. Cached a minute. */
+  async _dockerAppFromRegistry() {
+    if (this.platform !== "win32") return null;
+    if (this._regAppAt && Date.now() - this._regAppAt < 60000) return this._regApp;
+    let found = null;
+    for (const hive of ["HKLM", "HKCU"]) {
+      const key = `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Docker Desktop`;
+      const r = await this._exec("reg", ["query", key, "/v", "InstallLocation"], { timeout: 8000 });
+      if (!r.ok) continue;
+      const m = /InstallLocation\s+REG_SZ\s+(.+)/.exec(decodeWinText(r.stdoutRaw ?? r.stdout));
+      if (!m) continue;
+      const exe = path.join(m[1].trim(), "Docker Desktop.exe");
+      try {
+        if (fs.existsSync(exe)) { found = exe; break; }
+      } catch { /* keep looking */ }
+    }
+    this._regApp = found;
+    this._regAppAt = Date.now();
+    return found;
+  }
+
+  /** The Desktop app, from known paths first, the registry second. */
+  async _dockerApp() {
+    return this._dockerAppInstalled() || (await this._dockerAppFromRegistry());
+  }
+
   async detectDocker() {
     const cli = await this._dockerCli();
-    const appPath = this._dockerAppInstalled();
+    const appPath = await this._dockerApp();
     // "Installed" if we found a working CLI, the Docker Desktop app bundle, or a
     // docker binary on disk (covers the stale-PATH window right after install).
     const cliOnDisk = this._dockerCliCandidates().some((p) => {
@@ -304,9 +335,13 @@ class SetupService {
           type: "setup",
           message:
             this.platform === "win32"
-              ? "Docker Desktop installer launched — follow its prompts, then start Docker."
-              : "Docker disk image opened — drag Docker to Applications, then start it.",
+              ? "Docker Desktop installer launched — follow its prompts. Docker starts by itself when it finishes."
+              : "Docker disk image opened — drag Docker to Applications. It starts by itself once copied.",
         });
+        // Field report: the installer finished and nothing moved — the user
+        // had to find and open Docker themselves. Watch for the install to
+        // land, then start Docker without being asked.
+        this._watchInstallDone();
       })
       .catch((e) => {
         op.running = false;
@@ -319,6 +354,39 @@ class SetupService {
     return { started: true };
   }
 
+  /** Poll after the installer launches; when Docker Desktop appears on disk,
+   *  start it automatically. Gives the installer 15 minutes, then stands down
+   *  quietly (the setup card still advances on its own once detection flips). */
+  _watchInstallDone() {
+    if (this._installWatch) return;
+    const startedAt = Date.now();
+    const tick = async () => {
+      this._installWatch = null;
+      try {
+        this._regAppAt = 0; // the whole point is to notice a change
+        if (await this._dockerApp()) {
+          this.onEvent({ type: "setup", message: "Docker Desktop is installed — starting it now." });
+          await this.startDocker().catch((e) =>
+            this.onEvent({ type: "setup", level: "error", message: `Docker installed, but starting it failed: ${e.message}` })
+          );
+          return;
+        }
+      } catch {
+        /* detection hiccup — keep watching */
+      }
+      if (Date.now() - startedAt > 15 * 60 * 1000) return;
+      this._installWatch = setTimeout(tick, this._installPollMs);
+      this._installWatch.unref?.();
+    };
+    this._installWatch = setTimeout(tick, this._installPollMs);
+    this._installWatch.unref?.();
+  }
+
+  stopWatchers() {
+    if (this._installWatch) clearTimeout(this._installWatch);
+    this._installWatch = null;
+  }
+
   cancelInstallDocker() {
     if (this._op?.name === "docker-download" && this._op.running) {
       this._abort?.abort();
@@ -328,26 +396,59 @@ class SetupService {
   }
 
   async _launchInstaller(asset, dest) {
+    const launch = (cmd, args, opts = {}) => {
+      const child = spawn(cmd, args, { detached: true, stdio: "ignore", ...opts });
+      child.on("error", (e) => this.onEvent({ type: "setup", level: "error", message: `Couldn't launch the installer: ${e.message}` }));
+      child.unref();
+    };
     if (this.platform === "win32") {
       // The installer self-elevates and shows its own UI.
-      spawn(dest, [], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+      launch(dest, [], { windowsHide: false });
     } else if (this.platform === "darwin") {
-      spawn("open", [dest], { detached: true, stdio: "ignore" }).unref();
+      launch("open", [dest]);
     }
   }
 
   async startDocker() {
-    if (this.platform === "win32") {
-      const exe = this._dockerAppInstalled();
-      if (!exe) throw new Error("Docker Desktop isn't installed yet. Install it first.");
-      spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
-    } else if (this.platform === "darwin") {
-      spawn("open", ["-a", "Docker"], { detached: true, stdio: "ignore" }).unref();
-    } else {
+    if (this.platform === "linux") {
       throw new Error("Start the Docker service with your init system, e.g. `sudo systemctl start docker`.");
     }
+    const app = await this._dockerApp();
+    if (!app) {
+      // Field report: a leftover docker CLI can make Docker look installed
+      // while the Desktop app is gone, and this button answered "install it
+      // first" — to the person pressing the install-shaped button. Doing the
+      // install IS this button's job, so cascade into it.
+      this.onEvent({ type: "setup", message: "Docker Desktop isn't installed — downloading it now." });
+      const r = await this.installDocker();
+      return { ...r, installing: true };
+    }
+    // spawn ENOENT arrives as an async "error" event; unhandled, it would
+    // crash Core outright if the app vanished between detection and click.
+    const launch = (cmd, args) => {
+      const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+      child.on("error", (e) => this.onEvent({ type: "setup", level: "error", message: `Couldn't launch Docker: ${e.message}` }));
+      child.unref();
+    };
+    if (this.platform === "win32") launch(app, []);
+    else launch("open", ["-a", "Docker"]);
     this.onEvent({ type: "setup", message: "Starting Docker — this can take a minute on first launch." });
     return { started: true };
+  }
+
+  // Start only after the Docker engine is usable, including the reboot case.
+  async ensureDockerReady(probe, { timeoutMs = 60000, pollMs = 3000, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    let docker = await probe();
+    if (docker.ok) return;
+    if (this.platform === "linux") throw new Error(docker.error);
+    const result = await this.startDocker();
+    if (result?.installing) throw new Error("Docker Desktop is downloading. Finish its installer, then press Start node again.");
+    const deadline = Date.now() + timeoutMs;
+    while (!docker.ok && Date.now() < deadline) {
+      await wait(pollMs);
+      docker = await probe();
+    }
+    if (!docker.ok) throw new Error("Docker is still starting. Wait for Docker Desktop to finish starting, then press Start node again.");
   }
 
   dockerDocsUrl() {

@@ -115,9 +115,9 @@ test("assessHealth: advancing head is never stalled even after a long time", () 
   assert.equal(h.ok, true);
 });
 
-test("assessHealth: no service data is a no-op, not a false alarm", () => {
+test("assessHealth: missing service data is unknown, never healthy", () => {
   const h = assessHealth({ services: [], producing: true, now: 1000 });
-  assert.deepEqual(h, { ok: true, reason: "no-data", oom: false });
+  assert.deepEqual(h, { ok: false, reason: "no-data", oom: false });
 });
 
 // ---------- describeRecovery ----------
@@ -271,4 +271,10 @@ chain-1 | Block application - Height: 400
     start: null, target: null, height: null, pct: null,
   });
   assert.deepEqual(parseIndexProgress(""), { start: null, target: null, height: null, pct: null });
+});
+
+test("replay progress ignores a prior container run", () => {
+  const log = "Opened database at block - Height: 0\nIndexing to target block - Height: 1000\nBlock application - Height: 990\nOpened database at block - Height: 100\nIndexing to target block - Height: 200\nBlock application - Height: 150";
+  assert.equal(parseIndexProgress(log).height, 150);
+  assert.equal(parseIndexProgress(log).pct, 50);
 });

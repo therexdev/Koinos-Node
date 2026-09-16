@@ -26,6 +26,7 @@ function serviceTrouble(row) {
   const oom = /\(137\)/.test(status) || /oom/i.test(status) || row?.oomKilled === true;
   if (/restart/i.test(state) || /restarting/i.test(status)) return { down: true, oom };
   if (/exit|dead/i.test(state) || /\bexited\b/i.test(status)) return { down: true, oom };
+  if (/^(created|paused|removing)$/.test(state)) return { down: true, oom };
   return { down: false, oom };
 }
 
@@ -42,15 +43,15 @@ function assessHealth({
   services,
   producing = false,
   headHeight = null,
+  probeFailed = false,
   lastHeight = null,
   lastHeightAt = null,
   now = 0,
   stallMs = 8 * 60 * 1000,
 }) {
   const rows = Array.isArray(services) ? services : [];
-  // No data at all (a transient `docker compose ps` failure) — don't act on it;
-  // acting on nothing would restart a healthy node.
-  if (rows.length === 0) return { ok: true, reason: "no-data", oom: false };
+  // Missing status is unknown health. The watchdog does not restart on no-data.
+  if (rows.length === 0) return { ok: false, reason: "no-data", oom: false };
 
   const byName = new Map(
     rows.map((r) => [String(r?.service ?? r?.name ?? ""), r])
@@ -70,6 +71,10 @@ function assessHealth({
       return { ok: false, reason: t.oom ? "oom" : "service-down", oom: t.oom, service: name };
     }
     if (t.oom) anyOom = true;
+  }
+
+  if (probeFailed && lastHeightAt != null && now - lastHeightAt > stallMs) {
+    return { ok: false, reason: "chain-unresponsive", oom: anyOom, service: "chain" };
   }
 
   // Every container claims "up" but the chain head hasn't moved for too long:
@@ -93,6 +98,17 @@ function describeRecovery(reason, oom) {
   if (reason === "stalled") return "Your node stopped keeping up with the network.";
   if (reason === "service-down") return "Part of your node stopped unexpectedly.";
   return "Your node stopped responding.";
+}
+
+// A process being up is not evidence that its chain is answering. Preserve
+// more specific diagnoses and expected startup/replay or memory-saver states.
+function withSyncHealth(status, sync) {
+  if (!status.isRunning || status.op?.running || status.memorySaver ||
+      status.health?.ok === false || ["starting", "replaying"].includes(status.health?.reason)) return status;
+  if (!sync || sync.local?.error || sync.local?.height == null) {
+    return { ...status, health: { ...status.health, ok: false, reason: "local-chain-unavailable" } };
+  }
+  return status;
 }
 
 // Recommend how much memory/swap to give the WSL 2 VM based on the host's total
@@ -233,7 +249,11 @@ function isCrashLooping(logText, threshold = 2) {
 // block"); heights appear on the block lines it applies along the way.
 // Returns { start, target, height, pct } with nulls where the log doesn't say.
 function parseIndexProgress(logText) {
-  const t = String(logText || "");
+  let t = String(logText || "");
+  // A container restart keeps earlier logs. Only use the latest replay's
+  // starting point, target, and applied heights when measuring progress.
+  const boots = [...t.matchAll(/Opened database at block/gi)];
+  if (boots.length) t = t.slice(boots[boots.length - 1].index);
   const num = (re) => {
     const m = t.match(re);
     return m ? Number(m[1]) : null;
@@ -265,6 +285,7 @@ function parseIndexProgress(logText) {
 }
 
 module.exports = {
+  withSyncHealth,
   CORE_SERVICES,
   coreServicesFor,
   serviceTrouble,

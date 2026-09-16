@@ -270,41 +270,24 @@ function patchDashboardView() {
   }
   const symbol = d.network.tokenSymbol;
   const running = !!(d.node && d.node.isRunning);
-  const dockerOk = d.node && d.node.docker && d.node.docker.ok;
 
   const dot = $("#d-dot");
   const text = $("#d-status-text");
   const sub = $("#d-status-sub");
   const toggle = $("#d-toggle");
-  dot.className = "dot " + (running ? "green" : "red");
-  if (running) {
-    text.textContent = "● Running";
-    text.className = "status-text good-text";
-    const op = d.node.op;
-    sub.textContent = op && op.running ? `${op.name} in progress…` : `${d.node.runningCount} services · ${d.network.label}`;
-    toggle.textContent = "Stop node";
-    toggle.className = "btn danger";
-    toggle.dataset.action = "stop";
-  } else if (!dockerOk) {
-    text.textContent = "● Offline";
-    text.className = "status-text bad-text";
-    sub.textContent = "Docker not ready — finish setup on the Node tab";
-    toggle.textContent = "Set up node";
-    toggle.className = "btn";
-    toggle.dataset.action = "setup";
-  } else {
-    text.textContent = "● Offline";
-    text.className = "status-text bad-text";
-    sub.textContent = `Node stopped · ${d.network.label}`;
-    toggle.textContent = "Start node";
-    toggle.className = "btn primary";
-    toggle.dataset.action = "start";
-  }
-  toggle.disabled = false;
+  const display = nodeDisplayState(d.node, d.sync);
+  dot.className = "dot " + display.color;
+  text.textContent = display.label;
+  text.className = "status-text " + (display.color === "green" ? "good-text" : display.color === "red" ? "bad-text" : "");
+  sub.textContent = display.hint || `${d.node?.runningCount || 0} services · ${d.network.label}`;
+  toggle.textContent = display.busy ? display.label + "…" : running ? "Stop node" : "Start node";
+  toggle.className = "btn " + (running ? "danger" : "primary");
+  toggle.dataset.action = running ? "stop" : "start";
+  toggle.disabled = display.busy;
 
   const syncEl = $("#d-sync");
   const sync = d.sync;
-  if (running && sync && !sync.local?.error) {
+  if (running && !display.busy && sync?.local?.height != null && !sync.local.error) {
     const pct = sync.progressPct != null ? sync.progressPct : sync.inSync ? 100 : 0;
     syncEl.innerHTML = `<div class="row spread" style="margin-top:12px">
       <span>${sync.inSync ? '<span class="pill good">in sync</span>' : '<span class="pill warn">syncing</span>'}</span>
@@ -428,7 +411,7 @@ async function onDashToggle(e) {
     busyButton(btn, true, "Stopping…");
     try {
       await call("node:stop");
-      toast("Stopping node…");
+      toast("Node stopped. You can now restart your computer.", "good");
     } catch (err) {
       toast(err.message, "bad");
     }
@@ -1290,7 +1273,7 @@ function onStartNode() {
 async function onStopNode() {
   try {
     await call("node:stop");
-    toast("Stopping node…");
+    toast("Node stopped. You can now restart your computer.", "good");
     refreshNode();
   } catch (e) {
     toast(e.message, "bad");
@@ -1471,9 +1454,36 @@ function busyDelegate(el, label) {
   el.innerHTML = `<span class="spin"></span> ${esc(label)}`;
 }
 
+function nodeDisplayState(n, sync) {
+  const op = n?.op;
+  if (op?.running) {
+    const labels = { start: "Starting", stop: "Stopping", recover: "Recovering", "quick-sync": "Quick syncing", "rebuild-state": "Rebuilding" };
+    return { label: labels[op.name] || "Working", color: "amber", busy: true,
+      hint: op.name === "stop" ? "Wait for shutdown to finish before restarting your computer." : "Node operation in progress." };
+  }
+  if (op?.error) return { label: "Needs attention", color: "red", busy: false, hint: op.error };
+  if (!n?.docker?.ok) return { label: "Offline", color: "red", busy: false, hint: "Start node will check Docker first." };
+  if (!n.isRunning) return { label: "Stopped", color: "red", busy: false, hint: "Start the node to resume syncing." };
+  const h = n.health;
+  if (h?.ok === false || n.production?.reason) return { label: "Needs attention", color: "red", busy: false,
+    hint: h?.needsRepair ? "Open Node to review the repair options." : "The node is not ready to produce blocks. Check Node for details." };
+  if (h?.reason === "starting" || h?.recovering) return { label: "Starting", color: "amber", busy: false, hint: "Waiting for the chain to respond." };
+  if (h?.reason === "replaying") return { label: "Replaying blocks", color: "amber", busy: false, hint: "Rebuilding from existing blocks; no snapshot download is needed." };
+  if (n.memorySaver) return { label: "Services running", color: "amber", busy: false, hint: "Memory-saver mode disables the local RPC. Check production logs for progress." };
+  if (!sync || sync.local?.error || sync.local?.height == null) return { label: "Checking node", color: "amber", busy: false, hint: "Waiting for local chain status." };
+  return { label: sync.inSync ? "Running" : "Syncing", color: sync.inSync ? "green" : "amber", busy: false, hint: "" };
+}
+
 function patchNodeView() {
   if (!$("#n-docker")) return;
   const n = S.node;
+  const display = nodeDisplayState(n, n?.sync);
+  const restoring = n?.op?.running && ["quick-sync", "rebuild-state"].includes(n.op.name);
+  for (const id of ["#n-start", "#n-stop", "#n-quicksync", "#n-rebuild"]) {
+    if ($(id)) $(id).disabled = display.busy;
+  }
+  if ($("#n-start")) $("#n-start").hidden = !!n?.isRunning;
+  if ($("#n-stop")) $("#n-stop").hidden = !n?.isRunning;
 
   // guided setup card (shown until Docker is usable)
   const dockerEl = $("#n-docker");
@@ -1530,14 +1540,15 @@ function patchNodeView() {
   } else if (op && op.code !== 0 && op.error) {
     opEl.innerHTML = `<div class="banner bad"><b>${esc(op.name)} failed:</b> ${esc(op.error)}</div>`;
   } else {
-    opEl.innerHTML = "";
+    opEl.innerHTML = op?.name === "stop" && op.code === 0
+      ? '<div class="banner good">Node stopped. You can now restart your computer.</div>' : "";
   }
 
   // run pill + services
   const pill = $("#n-run-pill");
   if (pill) {
-    pill.className = "pill " + (n?.isRunning ? "good" : "warn");
-    pill.textContent = n?.isRunning ? `running (${n.runningCount} services)` : "stopped";
+    pill.className = "pill " + (display.color === "green" ? "good" : "warn");
+    pill.textContent = display.label;
   }
 
   // friendly, jargon-free health line + auto-recover toggle state
@@ -1547,12 +1558,14 @@ function patchNodeView() {
   if (healthEl) {
     const h = n?.health;
     const recovered = h?.recoveries ? ` <span class="muted small">(recovered ${h.recoveries}× recently)</span>` : "";
-    if (h?.needsRepair && h.repairReason === "state-mismatch") {
-      // The chain state is damaged but the blocks are fine — replaying them
+    if (n?.op?.running) {
+      healthEl.innerHTML = `<div class="banner info">${restoring ? "Block production is paused for data recovery. Start the node after Quick Sync; local rebuild starts it automatically." : esc(display.hint)}</div>`;
+    } else if (h?.needsRepair && h.repairReason === "state-mismatch") {
+      // The chain state may be damaged — replaying the stored blocks
       // locally is the cheap fix, so lead with it and keep Quick sync as the
       // fallback for when the blocks turn out to be the damaged side.
       healthEl.innerHTML = `<div class="banner bad">
-        <b>Your node's chain state got damaged.</b> Restarting can't fix it — but the blocks on your disk are fine, so it can be rebuilt from them with <b>no download</b>. Your wallet, keys and settings are safe.
+        <b>Chain replay failed validation.</b> Try rebuilding from the blocks already on disk with <b>no download</b>. If replay fails again, use Quick sync. Your wallet and producer keys are kept.
         <div class="row" style="margin-top:8px;gap:8px">
           <button id="n-repair-rebuild" class="btn primary" style="padding:6px 12px">🔄 Rebuild from local blocks</button>
           <button id="n-repair" class="btn ghost" style="padding:6px 12px">⚡ Quick sync instead</button>
@@ -1563,7 +1576,7 @@ function patchNodeView() {
     } else if (h?.needsRepair) {
       // Corrupted block data — a restart can't fix it. Offer the one-click rebuild.
       healthEl.innerHTML = `<div class="banner bad">
-        <b>Your node's block data got corrupted.</b> Restarting won't fix it — it needs to be rebuilt from a verified snapshot. Your wallet, keys and settings are safe, and it takes a few minutes.
+        <b>Your node needs data repair.</b> Restarting won't fix it — it needs to be rebuilt from a verified snapshot. Your wallet and producer keys are kept. Download and restore time depends on your disk and connection.
         <div style="margin-top:8px"><button id="n-repair" class="btn primary" style="padding:6px 12px">🔧 Repair node data</button></div>
       </div>`;
       $("#n-repair")?.addEventListener("click", onQuickSync);
@@ -1571,12 +1584,13 @@ function patchNodeView() {
       healthEl.innerHTML = "";
     } else if (h?.recovering) {
       healthEl.innerHTML = `<div class="banner info"><span class="spin"></span> Getting your node back up — this takes a minute. You don't need to do anything.</div>`;
-    } else if (h?.memorySaver) {
-      healthEl.innerHTML = `<div class="banner warn">Running in memory-saver mode to stay stable on this PC — your node is up and earning.${recovered}</div>`;
-    } else if (h && h.ok === false) {
-      healthEl.innerHTML = `<div class="banner warn">Your node needs attention — the app is taking care of it.</div>`;
+    } else if (h?.ok === false || n?.production?.reason) {
+      const reason = h?.message || { "chain-unresponsive": "The chain is not responding.", "local-chain-unavailable": "The local RPC is unavailable.", "chain-failed": "The chain service reported a fatal error.", "service-down": "A required node service has stopped.", "no-data": "Node health could not be checked." }[h?.reason] || "The node needs attention.";
+      healthEl.innerHTML = `<div class="banner warn">${esc(reason)} ${n?.autoRecover ? "Automatic recovery is enabled." : "Automatic recovery is off."} Check the service logs below.</div>`;
+    } else if (display.color !== "green") {
+      healthEl.innerHTML = `<div class="banner info">${esc(display.hint || display.label)}${recovered}</div>`;
     } else if (h) {
-      healthEl.innerHTML = `<div class="banner good">✓ Your node is running and healthy.${recovered}</div>`;
+      healthEl.innerHTML = `<div class="banner good">✓ Your node is responding and in sync.${recovered}</div>`;
     } else {
       healthEl.innerHTML = "";
     }
@@ -1596,7 +1610,11 @@ function patchNodeView() {
   const syncEl = $("#n-sync");
   if (syncEl) {
     const sync = n?.sync;
-    if (!n?.isRunning) {
+    if (restoring) {
+      syncEl.innerHTML = '<span class="muted">Chain synchronization status is unavailable during data recovery.</span>';
+    } else if (n?.memorySaver) {
+      syncEl.innerHTML = '<span class="muted">Local RPC is disabled in memory-saver mode. This alone does not mean the chain stopped.</span>';
+    } else if (!n?.isRunning) {
       syncEl.innerHTML = `<span class="muted">Start the node to sync the chain.</span>`;
     } else if (!sync || sync.local?.error) {
       syncEl.innerHTML = `<span class="muted">Waiting for local RPC… (services may still be starting)</span>`;
@@ -1633,7 +1651,7 @@ function patchNodeView() {
           ? "Checking your VHP… no need to unlock — it's read from your public address."
           : `Burn some ${sym()} in the Burn tab — VHP is your block-producing stake.`,
       ],
-      [st(n?.isRunning), "Node running", "Start the node above."],
+      [st(n?.isRunning && !display.busy && n?.health?.ok !== false), "Node ready", "Wait for node startup and check its health above."],
       [st(!!p?.filePublicKey), "Signing key generated", "Generated automatically by the node on first start."],
       [st(!!p?.matches), "Signing key registered on chain", "Register it with the button below (needs unlocked wallet + mana)."],
     ];
@@ -1647,9 +1665,9 @@ function patchNodeView() {
     const reg = $("#n-register");
     const regHint = $("#n-reg-hint");
     const canRegister = !!p?.filePublicKey && S.walletStage === "unlocked" && !p?.matches;
-    reg.disabled = !canRegister;
+    reg.disabled = !canRegister || display.busy;
     if (p?.matches) {
-      regHint.textContent = "✅ Registered — your node signs blocks with this key. Rewards arrive at your wallet address.";
+      regHint.textContent = "Signing key registered. Producing blocks also requires a healthy, synchronized node and sufficient VHP.";
     } else if (p?.registeredPublicKey && p?.filePublicKey && !p.matches) {
       regHint.textContent = "⚠️ A different key is registered on chain for this address. Register the current node key to replace it.";
     } else if (!p?.filePublicKey) {

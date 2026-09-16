@@ -9,6 +9,7 @@ const { NETWORKS, DEFAULT_SETTINGS } = require("./lib/constants");
 const { WalletService, MIN_PASSWORD_LENGTH } = require("./lib/wallet");
 const { ChainService } = require("./lib/chain");
 const { NodeManager } = require("./lib/node-manager");
+const { withSyncHealth } = require("./lib/node-health");
 const { SetupService } = require("./lib/setup");
 const { RewardEngine } = require("./lib/rewards");
 const { ProducerStats } = require("./lib/producer-stats");
@@ -112,10 +113,11 @@ if (!gotLock) {
       dataRoot: path.join(userData, "node"),
       onEvent: sendEvent,
       autoRecover: settings.get("node.autoRecover", true),
+      state,
       // Lets the watchdog notice a wedged chain: report the local head height.
-      probeHead: async () => {
-        const s = await chain.syncStatus().catch(() => null);
-        const h = s?.local?.height;
+      probeHead: async (networkId) => {
+        const s = await chain.headInfo([NETWORKS[networkId].localRpcUrl]).catch(() => null);
+        const h = s?.height;
         return h != null ? Number(h) : null;
       },
     });
@@ -166,13 +168,31 @@ if (!gotLock) {
     }, 8000);
 
     registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, stats, bridge, routeC, userData });
+    nodeMgr.monitorExisting(() => chain.network().id);
     createWindow();
     setupAutoUpdates();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
-    app.on("before-quit", () => rewards.stop());
+    let awaitingStop = false;
+    app.on("before-quit", event => {
+      if (nodeMgr.currentOp()?.name === "stop" && nodeMgr.currentOp()?.running) {
+        event.preventDefault();
+        if (!awaitingStop) {
+          awaitingStop = true;
+          nodeMgr.waitForStop().then(() => { awaitingStop = false; app.quit(); }).catch(error => {
+            awaitingStop = false;
+            if (!win) createWindow();
+            dialog.showErrorBox("Node shutdown failed", error.message + "\nCheck the Node tab before restarting your computer.");
+          });
+        }
+        return;
+      }
+      rewards.stop();
+      setup.stopWatchers();
+      nodeMgr.dispose();
+    });
   });
 
   app.on("window-all-closed", () => {
@@ -400,7 +420,7 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
     if (!status.docker?.ok) {
       setupStatus = await setup.status().catch(() => null);
     }
-    return { network: networkId, ...status, sync, setup: setupStatus };
+    return { network: networkId, ...withSyncHealth(status, sync), sync, setup: setupStatus };
   });
 
   // ----- guided setup (WSL + Docker) -----
@@ -419,24 +439,26 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
 
   handle("node:start", async ({ produce }) => {
     const networkId = chain.network().id;
-    // One-time, best-effort: right-size the WSL VM so the node has enough memory
-    // to begin with. Self-skips off Windows; writes .wslconfig only when it would
-    // raise a too-low limit. Fully guarded — tuning must NEVER block starting the
-    // node, whatever goes wrong here.
-    try {
-      if (!state.get("node.memoryTuned", false)) {
-        await setup.optimizeWslMemory().catch(() => {});
-        state.set("node.memoryTuned", true);
-      }
-    } catch {
-      /* tuning is best-effort; starting the node always wins */
-    }
     let producerAddress = null;
     if (produce) {
       producerAddress = wallet.address;
       if (!producerAddress) throw new Error("Create a wallet first to enable block production");
     }
-    return nodeMgr.start(networkId, producerAddress);
+    return nodeMgr.start(networkId, producerAddress, { prepare: async () => {
+      // One-time, best-effort: right-size the WSL VM so the node has enough memory
+      // to begin with. Self-skips off Windows; writes .wslconfig only when it would
+      // raise a too-low limit. Fully guarded — tuning must NEVER block starting the
+      // node, whatever goes wrong here.
+      try {
+        if (!state.get("node.memoryTuned", false)) {
+          await setup.optimizeWslMemory().catch(() => {});
+          state.set("node.memoryTuned", true);
+        }
+      } catch {
+        /* tuning is best-effort; starting the node always wins */
+      }
+      await setup.ensureDockerReady(() => nodeMgr.dockerInfo());
+    } });
   });
 
   handle("node:stop", () => nodeMgr.stop(chain.network().id));
@@ -481,11 +503,15 @@ function registerIpc({ settings, state, wallet, chain, nodeMgr, setup, rewards, 
         isRunning: ns.isRunning,
         runningCount: ns.runningCount,
         op: ns.op,
+        health: ns.health,
+        memorySaver: ns.memorySaver,
+        production: ns.production,
         producerRegistered: null,
       };
       if (ns.isRunning) {
         out.sync = await chain.syncStatus().catch(() => null);
       }
+      out.node = withSyncHealth(out.node, out.sync);
     } catch (e) {
       out.node = { error: String(e.message) };
     }

@@ -2,6 +2,7 @@ services:
    amqp:
       image: rabbitmq:3-management
       restart: always
+      stop_grace_period: 60s
       volumes:
          - "./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf"
       configs:
@@ -14,6 +15,7 @@ services:
    chain:
       image: koinos/koinos-chain:${CHAIN_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       depends_on:
          - amqp
       configs:
@@ -28,6 +30,7 @@ services:
    mempool:
       image: koinos/koinos-mempool:${MEMPOOL_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       depends_on:
          - amqp
          - chain
@@ -41,6 +44,7 @@ services:
    block_store:
       image: koinos/koinos-block-store:${BLOCK_STORE_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       depends_on:
          - amqp
          - chain
@@ -54,6 +58,7 @@ services:
    p2p:
       image: koinos/koinos-p2p:${P2P_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       depends_on:
          - amqp
          - block_store
@@ -70,6 +75,7 @@ services:
    block_producer:
       image: koinos/koinos-block-producer:${BLOCK_PRODUCER_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["block_producer", "all"]
       depends_on:
          - amqp
@@ -85,6 +91,7 @@ services:
    jsonrpc:
       image: koinos/koinos-jsonrpc:${JSONRPC_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["jsonrpc", "api", "all"]
       depends_on:
          - amqp
@@ -103,6 +110,7 @@ services:
    grpc:
       image: koinos/koinos-grpc:${GRPC_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["grpc", "api", "all"]
       depends_on:
          - amqp
@@ -119,6 +127,7 @@ services:
    transaction_store:
       image: koinos/koinos-transaction-store:${TRANSACTION_STORE_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["transaction_store", "api", "all"]
       depends_on:
          - amqp
@@ -133,6 +142,7 @@ services:
    contract_meta_store:
       image: koinos/koinos-contract-meta-store:${CONTRACT_META_STORE_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["contract_meta_store", "api", "all"]
       depends_on:
          - amqp
@@ -147,6 +157,7 @@ services:
    account_history:
       image: koinos/koinos-account-history:${ACCOUNT_HISTORY_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["account_history", "api", "all"]
       depends_on:
         - amqp
@@ -162,6 +173,7 @@ services:
    rest:
       image: koinos/koinos-rest:${REST_TAG:-latest}
       restart: always
+      stop_grace_period: 60s
       profiles: ["rest", "api", "all"]
       depends_on:
          - jsonrpc

@@ -123,16 +123,39 @@ the remaining days-worth of blocks in minutes-to-hours. Mainnet only.
 
 ### Stays running on its own
 
-You should never have to babysit the node. While it's running, the app quietly
-watches its pulse and, if a piece crashes or the chain gets stuck (most often a
-low-memory PC running out of room), **it restarts the node for you within a
-minute** — you just see one plain line like *"Your node is back up and running."*
+While it's running, the app watches the node and can restart services that
+crash or stop responding. Monitoring reconnects when you reopen the app, even
+if Docker is still starting. An intentional **Stop** remains stopped.
+The app checks chain responses and replay progress as well as container state;
+running containers alone do not mean the chain is healthy or producing blocks.
 No Docker commands, no logs to read. On Windows it also right-sizes how much
 memory the node is allowed to use during first start, so it's far less likely to
 happen in the first place; and if a PC keeps running low, the app switches the
 node to a lighter **memory-saver mode** automatically. You can turn the
 auto-restart off with the *Keep my node running automatically* switch on the
 Node tab, but it's on by default.
+
+### Stopping and restarting your computer
+
+Press **Stop** and wait for **“Node stopped. You can now restart your computer.”**
+Services get up to 60 seconds to shut down cleanly. If shutdown fails, the app
+shows the failure instead of claiming the node stopped. On the next start,
+Windows/macOS builds start Docker Desktop if necessary and wait for its engine.
+Existing chain data, producer keys and the wallet stay in place.
+
+If the chain fails replay validation, automatic restart loops stop. Try
+**Rebuild from local blocks** first; this replays your existing block store
+without downloading a snapshot. If that also fails, use **Quick sync**. Quick
+Sync checks folder locks before downloading, preserves rollback copies, and
+restores the originals if installation fails. An interrupted installation
+blocks startup until its recovery marker and folders are resolved.
+
+KoinosKit and older Koinos AI builds share Docker project names. KoinosKit checks
+the containers' owning data folder before managing them. If another app owns
+the project, stop it in that app first; KoinosKit will not take it over.
+
+See [restart verification](docs/node-restart-reliability.md) for the test scope
+and the Windows reboot check required before an installer release.
 
 ## How reward returns work
 

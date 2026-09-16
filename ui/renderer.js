@@ -192,6 +192,7 @@ async function refreshNode() {
   }
   try {
     S.producer = await call("producer:status");
+    S.producerBalances = await call("producer:balances").catch(() => null);
   } catch {
     S.producer = null;
   }
@@ -927,6 +928,9 @@ function txToast(res, label) {
 
 function renderBurnView() {
   const root = $("#view-burn");
+  if (S.appInfo.settingsHealth?.ok === false || S.appInfo.settings.producer?.mode === "external") {
+    root.innerHTML = '<h1>Burn KOIN → VHP</h1><div class="banner info">' + (S.appInfo.settingsHealth?.ok === false ? 'Confirm producer custody in Node setup before using wallet production actions.' : 'Prepare and sign burns through Node → External signing.') + '</div>'; return;
+  }
   if (S.walletStage !== "unlocked") {
     root.innerHTML = `
       <h1>Burn ${esc(sym())} → VHP</h1>
@@ -1054,7 +1058,45 @@ function onBurn() {
 
 // ---------- node view ----------
 
+// Session polling is separate from slower Docker and balance refreshes. It
+// pauses off the Node screen; the wallet still requires its own approval.
+let vaultPolling = false;
+async function refreshVault() {
+  if (vaultPolling || S.view !== "node" || !$("#pc-vault-status")) return;
+  vaultPolling = true;
+  try { S.vault = await call("producer:vaultStatus"); patchVault(); }
+  catch (e) { if ($("#pc-vault-status")) $("#pc-vault-status").textContent = e.message; }
+  finally { vaultPolling = false; }
+}
+function patchVault() {
+  if (!$("#pc-vault-status")) return;
+  const v = S.vault || {}, p = v.pending;
+  const paired = !!v.connected, active = paired || !!v.uri;
+  $("#pc-vault-connect").hidden = active;
+  $("#pc-vault-connect").disabled = net().id !== "mainnet";
+  $("#pc-vault-disconnect").hidden = !active;
+  $("#pc-vault-use").hidden = !paired || (S.appInfo.settings.producer?.mode === "external" && S.appInfo.settings.producer?.addresses?.[net().id] === v.address);
+  $("#pc-vault-pair").hidden = !v.uri;
+  const qr = $("#pc-vault-qr");
+  if (qr.dataset.uri !== (v.uri || "")) {
+    qr.dataset.uri = v.uri || "";
+    qr.replaceChildren();
+    if (v.uri) qr.appendChild(QRCode.toSvg(v.uri, { label: "Scan with Koin Vault Connect App" }));
+  }
+  $("#pc-vault-account").textContent = paired ? v.address : "";
+  $("#pc-vault-operations").hidden = !paired;
+  const busy = p && ["sending", "pending", "submitting", "unknown", "submitted"].includes(p.status) && p.expiresAt > Date.now();
+  $("#pc-vault-prepare").disabled = !!busy;
+  $("#pc-vault-use").disabled = !!busy;
+  const messages = { pending: "Waiting for your approval in Koin Vault…", sending: "Sending request to Koin Vault…", submitting: "Wallet is submitting your transaction…", rejected: "You rejected the request. Nothing was submitted by this request.", confirmed: "Transaction verified on-chain. For registration, click Verify registration before starting the node." };
+  $("#pc-vault-status").textContent = p ? (messages[p.status] || p.note || p.status) + (p.txId ? " Transaction: " + p.txId : "")
+    : paired ? "Connected. Use this producer wallet, generate a hot key, then sign its registration below."
+    : v.uri ? "Scan with Koin Vault → Connect App. This connection expires in 30 minutes."
+    : "Mainnet · No wallet connected.";
+}
+
 function renderNodeView() {
+  const custody = S.appInfo.settings.producer || { mode: "local", addresses: {} };
   const root = $("#view-node");
   root.innerHTML = `
     <div class="row spread">
@@ -1068,6 +1110,59 @@ function renderNodeView() {
       </div>
     </div>
     <p class="lead">Runs the official Koinos microservices with Docker. First start downloads images and syncs the chain — this can take a while.</p>
+    <div class="card producer-custody">
+      <h2>Producer wallet custody</h2>
+      ${S.appInfo.settingsHealth?.ok === false ? '<div class="banner bad">Custody settings could not be recovered. Stop the node, select the intended wallet mode and save it again before enabling production.</div>' : ""}
+      <p class="hint">Your KoinosKit local wallet stays separate from an external producer. Stop the node before changing custody or rotating its hot key.</p>
+      <label class="field"><span>Wallet mode</span><select id="pc-mode">${S.appInfo.settingsHealth?.ok === false ? '<option value="" selected disabled>Choose custody mode to recover</option>' : ""}<option value="local" ${S.appInfo.settingsHealth?.ok !== false && custody.mode !== "external" ? "selected" : ""}>Local local wallet (hot wallet)</option><option value="external" ${custody.mode === "external" ? "selected" : ""}>External/cold producer wallet</option></select></label>
+      <label class="field"><span>Watch-only producer address</span><input type="text" id="pc-address" placeholder="Public Koinos address only — never a private key" value="${esc(custody.addresses?.[net().id] || "")}"></label>
+      <div class="row custody-actions"><button id="pc-save" class="btn">Save custody mode</button><button id="pc-key" class="btn">Generate hot key</button><button id="pc-rotate" class="btn">Rotate hot key…</button><button id="pc-verify" class="btn">Verify registration</button></div>
+      <div class="custody-key-row">
+        <label class="field"><span>Hot block-production public key</span><input type="text" id="pc-public" class="mono" readonly aria-label="Block-production public key" placeholder="Generate a hot key to view its public key"></label>
+        <button id="pc-copy" class="btn ghost">Copy public key</button>
+      </div>
+      <p id="pc-result" class="hint" role="status"></p>
+      <div class="custody-vault">
+        <h3>Koin Vault</h3>
+        <p class="hint">Connect your phone, use its wallet as your producer, then approve registration, burns and transfers with your fingerprint or device passkey. Your node keeps running after the phone disconnects.</p>
+        <div class="row custody-actions"><button id="pc-vault-connect" class="btn primary">Connect Koin Vault</button><button id="pc-vault-use" class="btn" hidden>Use this producer wallet</button><button id="pc-vault-disconnect" class="btn ghost" hidden>Disconnect / cancel approval</button></div>
+        <div id="pc-vault-pair" hidden><div id="pc-vault-qr" aria-label="Scan with Koin Vault Connect App"></div><p class="hint">Open Koin Vault → Connect App → scan this QR and approve. Keep the wallet open for transaction requests.</p><div class="row custody-actions"><button id="pc-vault-open" class="btn">Open Koin Vault</button><button id="pc-vault-copy" class="btn ghost">Copy connection link</button></div></div>
+        <p id="pc-vault-status" class="hint" role="status">Mainnet · No wallet connected.</p>
+        <p id="pc-vault-account" class="mono"></p>
+        <div id="pc-vault-operations" hidden>
+          <label class="field"><span>Operation</span><select id="pc-vault-action"><option value="register">Register hot public key</option><option value="productionAllowance">Allow VHP for block production</option><option value="burn">Burn KOIN to this producer's VHP</option><option value="transfer">Transfer tokens</option></select></label>
+          <label class="field" id="pc-vault-amount-field" hidden><span>Amount</span><input id="pc-vault-amount" type="text" inputmode="decimal" placeholder="0.00"></label>
+          <label id="pc-vault-full-field" class="field" hidden><span><input type="checkbox" id="pc-vault-full" style="width:auto"> Use full VHP balance</span></label>
+          <label id="pc-vault-burn-full-field" class="field" hidden><span><input type="checkbox" id="pc-vault-burn-full" style="width:auto" checked> Also allow my full VHP balance for production</span><span class="hint">Includes the new VHP. Both changes use one phone approval.</span></label>
+          <label class="field" id="pc-vault-token-field" hidden><span>Token</span><select id="pc-vault-token"><option value="koin">KOIN</option><option value="vhp">VHP</option></select></label>
+          <label class="field" id="pc-vault-to-field" hidden><span>Recipient</span><input id="pc-vault-to" type="text" placeholder="Koinos address"></label>
+          <p id="pc-vault-result" class="hint" role="alert"></p>
+          <p class="hint">For Koin Vault production, approve a VHP allowance after registering the hot key. Choose a limited amount up to your VHP balance, or 0 to revoke.</p>
+          <button id="pc-vault-prepare" class="btn primary">Review and sign with Koin Vault</button>
+        </div>
+      </div>
+      <details class="custody-signing"><summary>External signing: registration, burns and transfers</summary>
+        <div class="custody-signing-content">
+        <div class="row custody-actions"><button id="pc-signer" class="btn">Open Kondor signer</button><button id="pc-copy-signer" class="btn ghost">Copy signer link</button><button id="pc-guide" class="btn ghost">Signing and backup guide</button></div>
+        <p class="hint">Prepare and download the unsigned JSON here. On your secure computer, open https://koinoskit.site/producer-signer/ in the browser with Kondor, load the file, review and sign. Bring the signed JSON back and import it below. Your private key stays in Kondor. The offline helper remains available in the guide. Drafts last 15 minutes by default. For dual boot, select the 24-hour window before preparing; after restarting KoinosKit, use Resume saved draft.</p>
+        <label class="field"><span>Operation</span><select id="pc-action"><option value="register">Register hot public key</option><option value="burn">Burn KOIN to this producer's VHP</option><option value="transfer">Transfer tokens</option></select></label>
+        <label class="field"><span>Amount (burn/transfer)</span><input type="text" id="pc-amount" inputmode="decimal" placeholder="0.00"></label>
+        <label class="field"><span>Token (transfer)</span><select id="pc-token"><option value="koin">KOIN</option><option value="vhp">VHP</option></select></label>
+        <label class="field"><span>Recipient (transfer)</span><input type="text" id="pc-to" placeholder="Koinos address"></label>
+        <label class="field"><span><input type="checkbox" id="pc-offline" style="width:auto"> Dual-boot / offline signing — keep this draft for 24 hours</span></label>
+        <button id="pc-resume" class="btn">Resume saved draft</button>
+        <button id="pc-prepare" class="btn">Prepare unsigned transaction</button>
+        <label class="field"><span>Unsigned transaction — take this file to the secure computer</span><textarea id="pc-unsigned" rows="7" readonly></textarea></label>
+        <div class="row custody-actions"><button id="pc-download-draft" class="btn">Download unsigned JSON</button><button id="pc-copy-draft" class="btn ghost">Copy unsigned JSON</button></div>
+        <label class="field"><span>Import signed JSON</span><input id="pc-import-signed" type="file" accept=".json,application/json"></label>
+        <label class="field"><span>Signed transaction JSON returned by your external signer</span><textarea id="pc-signed" rows="7" placeholder="Paste signed transaction JSON only"></textarea></label>
+        <p id="pc-signed-review" class="hint" role="status"></p>
+        <label class="field"><span><input type="checkbox" id="pc-confirm" style="width:auto"> I reviewed the actual operations, recipient, amount and network on my signing machine.</span></label>
+        <button id="pc-broadcast" class="btn primary">Broadcast signed transaction</button>
+        <p id="pc-broadcast-result" class="hint" role="status" aria-live="polite"></p>
+        </div>
+      </details>
+    </div>
     <div id="n-docker"></div>
     <div id="n-op"></div>
     <div class="grid-2">
@@ -1105,6 +1200,117 @@ function renderNodeView() {
       <pre class="logs" id="n-log-out">Press Refresh to load logs.</pre>
     </div>`;
 
+  const producerAction = (id, fn) => $(id).addEventListener("click", async () => {
+    const button = $(id); if (button.disabled) return; button.disabled = true;
+    if (id === "#pc-broadcast") $("#pc-broadcast-result").textContent = "Checking the signed transaction and submitting to the network…";
+    if (id.startsWith("#pc-vault-")) $("#pc-vault-result").textContent = "";
+    try { await fn(); } catch (e) {
+      $("#pc-result").textContent = e.message;
+      if (["#pc-broadcast", "#pc-resume"].includes(id)) { $("#pc-broadcast-result").textContent = e.message; toast(e.message, "bad"); }
+      if (id.startsWith("#pc-vault-")) { $("#pc-vault-result").textContent = e.message; toast(e.message, "bad"); }
+    }
+    finally { button.disabled = false; }
+  });
+  producerAction("#pc-save", async () => {
+    await call("producer:configure", { mode: $("#pc-mode").value, address: $("#pc-address").value });
+    S.appInfo = await call("app:info"); S.balancesAt = 0; S.balances = null;
+    await refreshNode(); renderBurnView(); renderReturnsView(); await refreshRewards();
+    $("#pc-result").textContent = "Custody saved. Automatic returns are off. Verify registration before starting production.";
+  });
+  producerAction("#pc-key", async () => { const r = await call("producer:key"); await refreshNode(); $("#pc-result").textContent = "Hot key ready. Back up private.key and public.key securely from: " + r.keyDirectory; });
+  producerAction("#pc-rotate", async () => showModal({ title: "Rotate hot production key?", body: "<p>Stop the node first. KoinosKit will preserve a local backup of the old hot key. Register the new public key with your external wallet before restarting production.</p>", actions: [{ label: "Cancel", onClick: close => close() }, { label: "Rotate key", onClick: async close => { try { const r = await call("producer:key", { rotate: true, confirm: true }); close(); await refreshNode(); $("#pc-result").textContent = "New hot key ready. Old key backup: " + (r.backupDirectory || "none"); } catch (e) { toast(e.message, "bad"); } } }] }));
+  producerAction("#pc-verify", async () => { await refreshNode(); $("#pc-result").textContent = S.producer?.matches ? "On-chain registration matches this node's hot key." : S.producer?.verificationError || "Registration does not match yet. Sign and confirm the registration, then check again."; });
+  producerAction("#pc-vault-connect", async () => { S.vault = await call("producer:vaultConnect"); patchVault(); });
+  producerAction("#pc-vault-disconnect", async () => { S.vault = await call("producer:vaultDisconnect"); patchVault(); });
+  producerAction("#pc-vault-use", async () => {
+    await call("producer:vaultUse");
+    S.appInfo = await call("app:info"); S.balancesAt = 0; S.balances = null;
+    $("#pc-mode").value = "external"; $("#pc-address").value = S.vault.address;
+    await refreshNode(); renderBurnView(); renderReturnsView(); await refreshRewards(); patchVault();
+    $("#pc-result").textContent = "Koin Vault producer saved. Generate a hot key, then register it with Koin Vault below.";
+  });
+  producerAction("#pc-vault-open", () => { if (!S.vault?.uri) throw new Error("Create a connection QR first."); return call("util:openExternal", { url: S.vault.uri }); });
+  producerAction("#pc-vault-copy", () => { if (!S.vault?.uri) throw new Error("Create a connection QR first."); return call("util:copy", { text: S.vault.uri }); });
+  $("#pc-vault-action").addEventListener("change", () => {
+    const action = $("#pc-vault-action").value;
+    $("#pc-vault-amount-field").hidden = action === "register";
+    $("#pc-vault-full-field").hidden = action !== "productionAllowance";
+    $("#pc-vault-burn-full-field").hidden = action !== "burn";
+    $("#pc-vault-amount").disabled = action === "productionAllowance" && $("#pc-vault-full").checked;
+    $("#pc-vault-token-field").hidden = $("#pc-vault-to-field").hidden = action !== "transfer";
+  });
+  $("#pc-vault-full").addEventListener("change", () => { $("#pc-vault-amount").disabled = $("#pc-vault-full").checked; });
+  producerAction("#pc-vault-prepare", async () => {
+    S.appInfo = await call("app:info");
+    const producer = S.appInfo.settings.producer;
+    if (producer?.mode !== "external" || producer?.addresses?.[net().id] !== S.vault?.address) {
+      throw new Error('Click "Use this producer wallet" above first (stop the node if it is running), then generate a hot key before registering it.');
+    }
+    $("#pc-vault-result").textContent = "Preparing review…";
+    const draft = await call("producer:vaultPrepare", { useFullBalance: $("#pc-vault-full").checked, allowFullVhp: $("#pc-vault-burn-full").checked, action: $("#pc-vault-action").value, amount: $("#pc-vault-amount").value, token: $("#pc-vault-token").value, to: $("#pc-vault-to").value.trim() });
+    $("#pc-vault-result").textContent = "Review the request in KoinosKit, then click Request wallet approval to send it to your phone.";
+    const a = draft.summary;
+    const detail = a.action === "productionAllowance" ? `<p>Set the official Proof-of-Burn contract's spending allowance to <b>${esc(a.amount)} VHP</b>.</p><p class="mono">${esc(a.spender)}</p><p>This replaces the remaining allowance. Block production consumes it as VHP converts to KOIN rewards. Renew it when exhausted; set 0 to revoke it. No tokens move now. Your hot key gains no transfer permission.</p>`
+      : a.action === "register" ? `<p>Register this node's hot public key:</p><p class="mono">${esc(a.publicKey)}</p>`
+      : a.action === "burn" ? `<p>Permanently burn <b>${esc(a.amount)} KOIN</b> for the same amount of VHP in your producer wallet.</p>${a.productionAllowance ? `<p>Also set the official PoB production allowance to <b>${esc(a.productionAllowance)} VHP</b>: current VHP plus this burn. Both changes succeed together. This replaces the remaining allowance; later deposits need a new approval.</p>` : ""}`
+      : `<p>Transfer <b>${esc(a.amount)} ${esc(a.token.toUpperCase())}</b> to:</p><p class="mono">${esc(a.to)}</p>`;
+    showModal({ title: "Review Koin Vault request", body: `<p>Mainnet · Producer:</p><p class="mono">${esc(a.producer)}</p>${detail}<p>Next, review the same details in Koin Vault and approve with your fingerprint or device passkey. Wallet approval submits the transaction.</p>`, actions: [
+      { label: "Cancel", onClick: close => close() },
+      { label: "Request wallet approval", class: "primary", onClick: async (close, modal) => {
+        const button = $(".btn.primary", modal); button.disabled = true;
+        try { S.vault = await call("producer:vaultSend", { confirm: true, draftId: draft.id }); close(); patchVault(); }
+        catch (e) { close(); $("#pc-result").textContent = e.message; $("#pc-vault-result").textContent = e.message; toast(e.message, "bad"); await refreshVault(); }
+      } }
+    ] });
+  });
+  patchVault();
+  void refreshVault();
+  const signerUrl = "https://koinoskit.site/producer-signer/";
+  producerAction("#pc-signer", () => call("util:openExternal", { url: signerUrl }));
+  producerAction("#pc-copy-signer", () => call("util:copy", { text: signerUrl }));
+  producerAction("#pc-guide", () => call("util:openExternal", { url: "https://github.com/therexdev/Koinos-Node/blob/claude/koinos-wallet-node-app-d57jkl/docs/EXTERNAL_PRODUCER.md" }));
+  producerAction("#pc-copy", () => call("util:copy", { text: $("#pc-public").value }));
+  producerAction("#pc-prepare", async () => { const d = await call("producer:prepare", { action: $("#pc-action").value, offlineSigning: $("#pc-offline").checked, amount: $("#pc-amount").value, token: $("#pc-token").value, to: $("#pc-to").value.trim() }); $("#pc-unsigned").value = JSON.stringify(d, null, 2); $("#pc-signed").value = ""; $("#pc-import-signed").value = ""; $("#pc-signed-review").textContent = ""; $("#pc-confirm").checked = false; $("#pc-result").textContent = "Prepared only — nothing signed or broadcast. Review decoded operations on your separate signing machine."; });
+  producerAction("#pc-resume", async () => {
+    const draft = await call("producer:draft");
+    $("#pc-unsigned").value = JSON.stringify(draft, null, 2);
+    $("#pc-signed").value = ""; $("#pc-import-signed").value = "";
+    $("#pc-signed-review").textContent = ""; $("#pc-confirm").checked = false;
+    $("#pc-offline").checked = draft.signingWindow === "offline-24h";
+    $("#pc-action").value = draft.summary.action;
+    $("#pc-amount").value = draft.summary.amount || "";
+    $("#pc-token").value = draft.summary.token || "koin";
+    $("#pc-to").value = draft.summary.to || "";
+    $("#pc-broadcast-result").textContent = `Saved draft restored. Expires ${new Date(draft.expiresAt).toLocaleString()}. Import its signed JSON below. Do not prepare another draft for this signature.`;
+  });
+  producerAction("#pc-download-draft", () => {
+    const content = $("#pc-unsigned").value;
+    if (!content) throw new Error("Prepare a transaction first.");
+    const url = URL.createObjectURL(new Blob([content + "\n"], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = "koinoskit-producer-unsigned.json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  const signedChanged = () => {
+    $("#pc-confirm").checked = false;
+    try {
+      const tx = JSON.parse($("#pc-signed").value), rc = tx.header?.rc_limit;
+      if (typeof rc !== "string" || !/^[0-9]{1,20}$/.test(rc)) throw new Error("Invalid mana");
+      $("#pc-signed-review").textContent = `Imported transaction ID: ${tx.id}. Mana limit: ${(BigInt(rc) / 100000000n).toString()}.${(BigInt(rc) % 100000000n).toString().padStart(8, "0")}. KoinosKit will verify its signature and compare all operations with your prepared draft before broadcasting.`;
+    } catch { $("#pc-signed-review").textContent = $("#pc-signed").value ? "Choose or paste a valid signed transaction JSON file." : ""; }
+  };
+  $("#pc-signed").addEventListener("input", signedChanged);
+  $("#pc-import-signed").addEventListener("change", async () => {
+    const file = $("#pc-import-signed").files[0];
+    $("#pc-signed").value = ""; signedChanged();
+    if (!file) return;
+    try {
+      if (file.size > 100000) throw new Error("Choose a signed JSON file smaller than 100 KB.");
+      const content = await file.text(); JSON.parse(content);
+      $("#pc-signed").value = content; signedChanged();
+    } catch (e) { $("#pc-result").textContent = e.message; }
+  });
+  producerAction("#pc-copy-draft", () => call("util:copy", { text: $("#pc-unsigned").value }));
+  producerAction("#pc-broadcast", async () => { const tx = JSON.parse($("#pc-signed").value); const r = await call("producer:broadcast", { transaction: tx, confirm: $("#pc-confirm").checked }); $("#pc-signed").value = ""; $("#pc-unsigned").value = ""; $("#pc-import-signed").value = ""; $("#pc-signed-review").textContent = ""; $("#pc-confirm").checked = false; txToast(r, "External transaction"); $("#pc-result").textContent = r.note; $("#pc-broadcast-result").textContent = `${r.note} Transaction ID: ${r.txId}`; await refreshNode(); });
   $("#n-open").addEventListener("click", () => call("util:openPath", { which: "nodeData" }).catch(() => {}));
   $("#n-docker").addEventListener("click", onSetupClick);
   $("#n-start").addEventListener("click", onStartNode);
@@ -1241,13 +1447,13 @@ async function onQuickSync() {
 }
 
 function onStartNode() {
-  const canProduce = S.wallet?.exists;
+  const canProduce = S.producer?.mode === "external" ? !!S.producer.matches : S.producer?.mode === "local" && S.wallet?.exists;
   showModal({
     title: "Start Koinos node",
     body: `
       <label class="field"><span class="row" style="gap:8px">
         <input type="checkbox" id="ns-produce" ${canProduce ? "checked" : "disabled"} style="width:auto">
-        <span>Enable block production (uses your wallet address <span class="mono">${esc(S.wallet?.address ?? "no wallet yet")}</span> as producer)</span>
+        <span>Enable block production (uses producer address <span class="mono">${esc(S.producer?.address || "not configured")}</span> as producer)</span>
       </span></label>
       <p class="small muted">The node runs in Docker in the background and keeps running even if you close this app. First sync downloads the whole chain.</p>`,
     actions: [
@@ -1638,22 +1844,22 @@ function patchNodeView() {
     // wallet is LOCKED. Distinguish "still checking" from a real zero so the list
     // never claims you have no VHP when it simply hasn't looked yet (the node
     // produces blocks whether or not the app wallet is unlocked).
-    const balLoaded = S.balances && !S.balances.error;
-    const hasVhp = balLoaded && BigInt(S.balances.vhp ?? "0") > 0n;
+    const balLoaded = S.producerBalances && !S.producerBalances.error;
+    const hasVhp = balLoaded && BigInt(S.producerBalances.vhp ?? "0") > 0n;
     const vhpState = hasVhp ? "ok" : balLoaded ? "empty" : "pending";
     const st = (ok) => (ok ? "ok" : "empty");
     const items = [
-      [st(S.wallet?.exists), "Wallet created", "Create one in the Wallet tab."],
+      [st(!!p?.address), "Producer address configured", "Choose a local or external producer address above."],
       [
         vhpState,
         "VHP staked at your address",
         vhpState === "pending"
           ? "Checking your VHP… no need to unlock — it's read from your public address."
-          : `Burn some ${sym()} in the Burn tab — VHP is your block-producing stake.`,
+          : p?.mode === "external" ? "Use External signing above to burn to this producer." : `Burn some ${sym()} in the Burn tab — VHP is your block-producing stake.`,
       ],
       [st(n?.isRunning && !display.busy && n?.health?.ok !== false), "Node ready", "Wait for node startup and check its health above."],
-      [st(!!p?.filePublicKey), "Signing key generated", "Generated automatically by the node on first start."],
-      [st(!!p?.matches), "Signing key registered on chain", "Register it with the button below (needs unlocked wallet + mana)."],
+      [st(!!p?.filePublicKey), "Signing key generated", p?.mode === "external" ? "Use Generate hot key above." : "Generated automatically by the node on first start."],
+      [st(!!p?.matches), "Signing key registered on chain", p?.mode === "external" ? "Sign externally, then Verify registration above." : "Register it with the button below (needs unlocked wallet + mana)."],
     ];
     const tickFor = (s) => (s === "ok" ? "✅" : s === "pending" ? "⏳" : "⬜");
     checklist.innerHTML = items
@@ -1664,9 +1870,14 @@ function patchNodeView() {
       .join("");
     const reg = $("#n-register");
     const regHint = $("#n-reg-hint");
-    const canRegister = !!p?.filePublicKey && S.walletStage === "unlocked" && !p?.matches;
+    const canRegister = p?.mode === "local" && !!p?.filePublicKey && S.walletStage === "unlocked" && !p?.matches;
     reg.disabled = !canRegister || display.busy;
-    if (p?.matches) {
+    if ($("#pc-public")) $("#pc-public").value = p?.filePublicKey || "";
+    if (p?.mode === "unresolved") {
+      regHint.textContent = p.verificationError;
+    } else if (p?.mode === "external") {
+      regHint.textContent = p.matches ? "External registration verified. Production also needs a healthy, synchronized node and sufficient VHP." : p.verificationError || "Use External signing above to register this hot key with your separate wallet.";
+    } else if (p?.matches) {
       regHint.textContent = "Signing key registered. Producing blocks also requires a healthy, synchronized node and sufficient VHP.";
     } else if (p?.registeredPublicKey && p?.filePublicKey && !p.matches) {
       regHint.textContent = "⚠️ A different key is registered on chain for this address. Register the current node key to replace it.";
@@ -2570,6 +2781,9 @@ async function onSaveOnrampEndpoint() {
 
 function renderReturnsView() {
   const root = $("#view-returns");
+  if (S.appInfo.settingsHealth?.ok === false || S.appInfo.settings.producer?.mode === "external") {
+    root.innerHTML = '<h1>Reward returns</h1><div class="banner info">' + (S.appInfo.settingsHealth?.ok === false ? 'Confirm producer custody in Node setup before using wallet production actions.' : 'Automatic burns and transfers are disabled for your external producer. Use Node → External signing for each funds operation.') + '</div>'; return;
+  }
   const cfg = S.rewards?.config ?? S.appInfo.settings.rewards;
   root.innerHTML = `
     <h1>Reward returns</h1>
@@ -2907,6 +3121,7 @@ async function init() {
   refreshRewards();
 
   setInterval(heartbeat, 5000);
+  setInterval(() => { if (S.vault?.expiresAt) void refreshVault(); }, 2500);
 }
 
 init().catch((e) => {

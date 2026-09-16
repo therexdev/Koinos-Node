@@ -47,6 +47,7 @@
       "return": "koinos.standards.kcs4.allowance_result",
       "entry_point": 854630305,
       "description": "Checks the allowance for a owner and spender",
+      "default_output": { "value": "0" },
       "read_only": true
     },
     "get_allowances": {
